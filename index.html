@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="UTF-8">
+<title>Projector Overlay – Manager</title>
+<style>
+  :root {
+    --bg: #0b0b0d; --panel: #15151a; --ink: #f4f1ea;
+    --muted: #8a8780; --accent: #ff5a1f; --line: #2a2a32;
+    --danger: #c0392b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
+  body { font-family: ui-serif, Georgia, 'Iowan Old Style', serif; font-feature-settings: "ss01","liga"; }
+
+  /* ── Page layout ── */
+  .page { max-width: 860px; margin: 0 auto; padding: 3rem 2rem 5rem; }
+
+  /* ── Header ── */
+  .eyebrow { font-family: ui-monospace, monospace; font-size: 0.72rem; letter-spacing: 0.24em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.5rem; }
+  h1 { font-weight: 400; font-style: italic; font-size: 2.2rem; letter-spacing: -0.01em; margin: 0 0 0.25rem; }
+  h1 .accent { color: var(--accent); font-style: normal; font-weight: 500; }
+  .sub { color: var(--muted); font-size: 0.95rem; margin: 0 0 2.5rem; }
+
+  /* ── Buttons ── */
+  .btn { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 1rem; font-family: ui-monospace, monospace; font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase; border: none; border-radius: 2px; cursor: pointer; transition: opacity 0.15s, transform 0.15s; text-decoration: none; }
+  .btn:hover { opacity: 0.85; transform: translateY(-1px); }
+  .btn-primary { background: var(--accent); color: #0b0b0d; }
+  .btn-ghost   { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  .btn-ghost:hover  { color: var(--ink); border-color: var(--ink); opacity: 1; }
+  .btn-danger  { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  .btn-launch  { background: var(--accent); color: #0b0b0d; }
+  .btn-live    { background: transparent; color: #4caf82; border: 1px solid #4caf82; opacity: 1 !important; cursor: default !important; transform: none !important; }
+  .btn-sm      { padding: 0.35rem 0.65rem; font-size: 0.68rem; }
+
+  /* ── Top bar ── */
+  .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; }
+  .topbar h2 { font-family: ui-monospace, monospace; font-size: 0.8rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); font-weight: 400; margin: 0; }
+
+  /* ── Set list ── */
+  #set-list { border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .set-empty { padding: 3rem; text-align: center; color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.85rem; margin: 0; }
+  .set-row { display: grid; grid-template-columns: 68px 1fr auto; gap: 1.25rem; align-items: center; padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .set-row:last-child { border-bottom: none; }
+  .set-row:hover { background: #1a1a20; }
+  .set-row--live { border-left: 2px solid #4caf82; }
+  .set-thumb { width: 68px; height: 40px; background: #000 center/contain no-repeat; border: 1px solid var(--line); border-radius: 2px; flex-shrink: 0; }
+  .set-meta { min-width: 0; }
+  .set-name   { font-size: 1rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.2rem; }
+  .set-detail { font-family: ui-monospace, monospace; font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .set-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
+
+  /* ── Form panel ── */
+  #form-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 2rem 2.25rem; margin-top: 2rem; }
+  #form-panel h3 { font-weight: 400; font-style: italic; font-size: 1.5rem; margin: 0 0 1.5rem; }
+  .field { display: block; margin-bottom: 1.25rem; }
+  .field label { display: block; font-family: ui-monospace, monospace; font-size: 0.7rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.4rem; }
+  .field input[type="text"],
+  .field input[type="number"],
+  .field input[type="file"],
+  .field select { width: 100%; background: transparent; color: var(--ink); border: none; border-bottom: 1px solid var(--line); padding: 0.55rem 0; font-family: ui-monospace, monospace; font-size: 0.95rem; outline: none; transition: border-color 0.2s; }
+  .field input:focus,
+  .field select:focus { border-bottom-color: var(--accent); }
+  .field select { cursor: pointer; appearance: none; -webkit-appearance: none; }
+  .field select option { background: var(--panel); color: var(--ink); }
+  .field .hint { color: var(--muted); font-size: 0.8rem; margin-top: 0.3rem; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+  .img-preview { margin-top: 0.6rem; width: 120px; height: 70px; background: #000 center/contain no-repeat; border: 1px dashed var(--line); border-radius: 2px; }
+  .form-actions { display: flex; gap: 0.75rem; margin-top: 1.75rem; }
+  .form-error { color: #ff8a6b; font-family: ui-monospace, monospace; font-size: 0.8rem; margin-top: 1rem; min-height: 1em; }
+
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <p class="eyebrow">Projector · Overlay · Manager</p>
+  <h1>Your <span class="accent">sets</span>.</h1>
+  <p class="sub">Save multiple projection setups. Click <em>Launch</em> to open the output in a new window – then move it to the projector and hit F11.</p>
+
+  <!-- ── Set list ── -->
+  <div class="topbar">
+    <h2>Saved sets</h2>
+    <button class="btn btn-primary" id="new-btn">+ New set</button>
+  </div>
+  <div id="set-list">
+    <p class="set-empty" id="empty-state">No sets yet – click "New set" to get started.</p>
+  </div>
+
+  <!-- ── Edit / create form ── -->
+  <div id="form-panel" hidden>
+    <h3 id="form-title">New set</h3>
+    <div class="field">
+      <label for="f-name">Set name</label>
+      <input type="text" id="f-name" placeholder="e.g. Sunday Service">
+    </div>
+    <div class="field">
+      <label for="f-url">YouTube URL</label>
+      <input type="text" id="f-url" placeholder="https://www.youtube.com/watch?v=...">
+      <div class="hint">Single videos, playlists and livestreams all work.</div>
+    </div>
+    <div class="field">
+      <label for="f-image">Overlay image (PNG with transparency recommended)</label>
+      <input type="file" id="f-image" accept="image/*">
+      <div id="f-preview" class="img-preview"></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="f-interval">Show every (seconds)</label>
+        <input type="number" id="f-interval" value="60" min="1" step="1">
+      </div>
+      <div class="field">
+        <label for="f-duration">Stay on for (seconds)</label>
+        <input type="number" id="f-duration" value="5" min="1" step="1">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="f-fade-in">Fade in (seconds)</label>
+        <input type="number" id="f-fade-in" value="0.35" min="0" step="0.05">
+      </div>
+      <div class="field">
+        <label for="f-fade-out">Fade out (seconds)</label>
+        <input type="number" id="f-fade-out" value="0.35" min="0" step="0.05">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="f-easing">Easing curve</label>
+        <select id="f-easing">
+          <option value="ease">Ease (default)</option>
+          <option value="linear">Linear</option>
+          <option value="ease-in">Ease in</option>
+          <option value="ease-out">Ease out</option>
+          <option value="ease-in-out">Ease in–out</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-quality">Video quality</label>
+        <select id="f-quality">
+          <option value="default">Auto</option>
+          <option value="small">240p</option>
+          <option value="medium">360p</option>
+          <option value="large">480p</option>
+          <option value="hd720">720p</option>
+          <option value="hd1080">1080p</option>
+          <option value="hd1440">1440p</option>
+          <option value="hd2160">2160p (4K)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-primary" id="save-btn">Save set</button>
+      <button class="btn btn-ghost"   id="cancel-btn">Cancel</button>
+    </div>
+    <p class="form-error" id="form-error"></p>
+  </div>
+
+</div>
+<script>
+// ── Storage ──
+// sets: [{ id, name, url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }]
+
+function loadSets() {
+  try { return JSON.parse(localStorage.getItem('projector_sets') || '[]'); }
+  catch { return []; }
+}
+function saveSets(sets) { localStorage.setItem('projector_sets', JSON.stringify(sets)); }
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+// ── State ──
+let sets = loadSets();
+let editingId = null;           // null = new set, string = editing existing
+let pendingImageDataUrl = null; // image selected in the current form session
+let playerWin = null;           // reference to the open output window
+let activeSetId = null;         // id of the set currently in the player
+
+// ── Render list ──
+function renderList() {
+  const list = document.getElementById('set-list');
+
+  if (sets.length === 0) {
+    list.innerHTML = '<p class="set-empty">No sets yet – click "New set" to get started.</p>';
+    return;
+  }
+
+  // { id, name, url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }
+  const windowOpen = playerWin && !playerWin.closed;
+
+  list.innerHTML = sets.map(s => {
+    const isLive = windowOpen && s.id === activeSetId;
+    const launchBtn = isLive
+      ? `<button class="btn btn-live btn-sm" disabled>● Live</button>`
+      : windowOpen
+        ? `<button class="btn btn-launch btn-sm" onclick="launchSet('${s.id}')">Switch →</button>`
+        : `<button class="btn btn-launch btn-sm" onclick="launchSet('${s.id}')">Launch →</button>`;
+    return `
+    <div class="set-row${isLive ? ' set-row--live' : ''}">
+      <div class="set-thumb" style="background-image:url(${s.imageDataUrl || ''})"></div>
+      <div class="set-meta">
+        <div class="set-name">${esc(s.name)}</div>
+        <div class="set-detail">${esc(shortUrl(s.url))} &nbsp;·&nbsp; every ${s.interval}s / on for ${s.duration}s &nbsp;·&nbsp; fade ${s.fadeIn ?? 0.35}s↑ ${s.fadeOut ?? 0.35}s↓ &nbsp;·&nbsp; ${qualityLabel(s.quality)}</div>
+      </div>
+      <div class="set-actions">
+        <button class="btn btn-ghost  btn-sm" onclick="editSet('${s.id}')">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteSet('${s.id}')">Delete</button>
+        ${launchBtn}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function qualityLabel(q) {
+  return { default:'auto', small:'240p', medium:'360p', large:'480p', hd720:'720p', hd1080:'1080p', hd1440:'1440p', hd2160:'4K' }[q] ?? 'auto';
+}
+
+function shortUrl(url) {
+  try {
+    const u = new URL(url);
+    const s = u.hostname.replace(/^www\./,'') + u.pathname;
+    return s.length > 42 ? s.slice(0, 42) + '…' : s;
+  } catch { return url.slice(0, 42); }
+}
+
+// ── Form open / close ──
+function openForm(set = null) {
+  editingId         = set ? set.id : null;
+  pendingImageDataUrl = null;
+
+  document.getElementById('form-title').textContent   = set ? 'Edit set' : 'New set';
+  document.getElementById('f-name').value             = set?.name     ?? '';
+  document.getElementById('f-url').value              = set?.url      ?? '';
+  document.getElementById('f-interval').value         = set?.interval ?? 60;
+  document.getElementById('f-duration').value         = set?.duration ?? 5;
+  document.getElementById('f-fade-in').value          = set?.fadeIn   ?? 0.35;
+  document.getElementById('f-fade-out').value         = set?.fadeOut  ?? 0.35;
+  document.getElementById('f-easing').value           = set?.easing   ?? 'ease';
+  document.getElementById('f-quality').value          = set?.quality  ?? 'default';
+  document.getElementById('f-image').value            = '';
+  document.getElementById('f-preview').style.backgroundImage = set?.imageDataUrl ? `url(${set.imageDataUrl})` : '';
+  document.getElementById('form-error').textContent   = '';
+  document.getElementById('form-panel').hidden        = false;
+
+  document.getElementById('form-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  document.getElementById('f-name').focus();
+}
+
+function closeForm() {
+  document.getElementById('form-panel').hidden = true;
+  editingId = null;
+  pendingImageDataUrl = null;
+}
+
+// ── Image picker ──
+document.getElementById('f-image').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    pendingImageDataUrl = ev.target.result;
+    document.getElementById('f-preview').style.backgroundImage = `url(${pendingImageDataUrl})`;
+  };
+  reader.readAsDataURL(file);
+});
+
+// ── Save ──
+document.getElementById('save-btn').addEventListener('click', () => {
+  const err      = document.getElementById('form-error');
+  err.textContent = '';
+
+  const name     = document.getElementById('f-name').value.trim();
+  const url      = document.getElementById('f-url').value.trim();
+  const interval = Math.max(1,   parseInt(document.getElementById('f-interval').value, 10) || 60);
+  const duration = Math.max(1,   parseInt(document.getElementById('f-duration').value, 10) || 5);
+  const fadeIn   = Math.max(0,  parseFloat(document.getElementById('f-fade-in').value)  || 0.35);
+  const fadeOut  = Math.max(0,  parseFloat(document.getElementById('f-fade-out').value) || 0.35);
+  const easing   = document.getElementById('f-easing').value  || 'ease';
+  const quality  = document.getElementById('f-quality').value || 'default';
+
+  if (!name) { err.textContent = 'Please give this set a name.'; return; }
+  if (!url)  { err.textContent = 'Please enter a YouTube URL.'; return; }
+
+  // Keep existing image when editing and no new file was chosen
+  const existing     = editingId ? sets.find(s => s.id === editingId) : null;
+  const imageDataUrl = pendingImageDataUrl || existing?.imageDataUrl || null;
+  if (!imageDataUrl) { err.textContent = 'Please choose an overlay image.'; return; }
+
+  if (editingId) {
+    sets = sets.map(s => s.id === editingId ? { ...s, name, url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality } : s);
+  } else {
+    sets.push({ id: uid(), name, url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality });
+  }
+
+  saveSets(sets);
+  renderList();
+  closeForm();
+});
+
+document.getElementById('cancel-btn').addEventListener('click', closeForm);
+document.getElementById('new-btn').addEventListener('click', () => openForm());
+
+// ── Edit / Delete / Launch (called from inline onclick) ──
+function editSet(id) {
+  const set = sets.find(s => s.id === id);
+  if (set) openForm(set);
+}
+
+function deleteSet(id) {
+  const set = sets.find(s => s.id === id);
+  if (!set || !confirm(`Delete "${set.name}"?`)) return;
+  sets = sets.filter(s => s.id !== id);
+  saveSets(sets);
+  renderList();
+  if (editingId === id) closeForm();
+}
+
+function launchSet(id) {
+  const set = sets.find(s => s.id === id);
+  if (!set) return;
+
+  activeSetId = id;
+
+  // Write active config so player.html reads it fresh on load
+  localStorage.setItem('projector_active', JSON.stringify({
+    url: set.url, imageDataUrl: set.imageDataUrl,
+    interval: set.interval, duration: set.duration,
+    fadeIn:  set.fadeIn  ?? 0.35,
+    fadeOut: set.fadeOut ?? 0.35,
+    easing:  set.easing  ?? 'ease',
+    quality: set.quality ?? 'default',
+  }));
+
+  if (playerWin && !playerWin.closed) {
+    // Window already open – navigate it to reload with the new config
+    playerWin.location.href = 'player.html';
+  } else {
+    // No window open yet – open one (named so it's always the same slot)
+    playerWin = window.open('player.html', 'projector-output');
+  }
+
+  // Poll until the window reports closed so button state stays accurate
+  const poll = setInterval(() => {
+    if (playerWin && playerWin.closed) {
+      playerWin = null;
+      activeSetId = null;
+      clearInterval(poll);
+      renderList();
+    }
+  }, 1000);
+
+  renderList();
+}
+
+// ── Init ──
+renderList();
+</script>
+</body>
+</html>

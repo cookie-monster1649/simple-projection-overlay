@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="UTF-8">
+<title>Projector Output</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #000; overflow: hidden; }
+
+  #stage  { position: fixed; inset: 0; background: #000; }
+  #player { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  #overlay {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
+    opacity: 0;
+    /* transition is set dynamically per fade-in / fade-out from config */
+    display: none;
+  }
+  #overlay.visible { opacity: 1; }
+
+  #hint {
+    position: fixed; top: 1rem; right: 1rem;
+    background: rgba(0,0,0,0.65); color: #f4f1ea;
+    padding: 0.5rem 0.8rem;
+    font-family: ui-monospace, monospace; font-size: 0.75rem;
+    border-radius: 2px; z-index: 10;
+  }
+
+  /* ── Error state ── */
+  #error {
+    position: fixed; inset: 0;
+    display: none; place-items: center;
+    background: #0b0b0d; color: #ff8a6b;
+    font-family: ui-monospace, monospace; font-size: 1rem;
+    text-align: center; padding: 2rem; flex-direction: column; gap: 1rem;
+  }
+  #error a { color: #ff5a1f; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="player"></div>
+  <div id="overlay"></div>
+  <div id="hint">Press F11 for fullscreen &nbsp;·&nbsp; Space to pause</div>
+</div>
+<div id="error"></div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+  // ── Config from manager ──
+  // { url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }
+  const config = (() => {
+    try { return JSON.parse(localStorage.getItem('projector_active') || 'null'); }
+    catch { return null; }
+  })();
+
+  if (!config) {
+    showError('No active set found. <a href="index.html">Go back to the manager</a> and click Launch.');
+  } else {
+    init(config);
+  }
+
+  function init({ url, imageDataUrl, interval, duration, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default' }) {
+    document.getElementById('overlay').style.backgroundImage = `url(${imageDataUrl})`;
+    setTimeout(() => document.getElementById('hint').remove(), 6000);
+
+    const parsed = parseYouTube(url);
+    if (!parsed) { showError('Invalid YouTube URL in the saved set.'); return; }
+    buildPlayer(parsed, { interval, duration, fadeIn, fadeOut, easing, quality });
+  }
+
+  function showError(html) {
+    document.getElementById('stage').style.display = 'none';
+    const el = document.getElementById('error');
+    el.style.display = 'grid';
+    el.innerHTML = html;
+  }
+
+  // ── YouTube URL parser ──
+  function parseYouTube(url) {
+    try {
+      const u = new URL(url.trim());
+      const host = u.hostname.replace(/^www\./, '');
+      let videoId = null;
+      const listId = u.searchParams.get('list');
+      if (host === 'youtu.be') {
+        videoId = u.pathname.slice(1) || null;
+      } else if (host.endsWith('youtube.com')) {
+        if      (u.pathname === '/watch')              videoId = u.searchParams.get('v');
+        else if (u.pathname.startsWith('/embed/'))     videoId = u.pathname.split('/')[2] || null;
+        else if (u.pathname.startsWith('/live/'))      videoId = u.pathname.split('/')[2] || null;
+        else if (u.pathname.startsWith('/shorts/'))    videoId = u.pathname.split('/')[2] || null;
+      }
+      if (!videoId && !listId) return null;
+      return { videoId, listId };
+    } catch { return null; }
+  }
+
+  // ── Player ──
+  let ytPlayer = null;
+
+  function buildPlayer({ videoId, listId }, { interval, duration, fadeIn, fadeOut, easing, quality }) {
+    const playerVars = {
+      autoplay: 1, controls: 0, rel: 0, modestbranding: 1,
+      playsinline: 1, fs: 0, iv_load_policy: 3, enablejsapi: 1,
+      origin: window.location.origin,
+    };
+    if (listId) { playerVars.listType = 'playlist'; playerVars.list = listId; }
+
+    const cfg = {
+      width: '100%', height: '100%',
+      // youtube-nocookie.com is more restrictive and triggers error 5 on some content;
+      // we're already on a localhost http origin so youtube.com is safe here
+      host: 'https://www.youtube.com',
+      playerVars,
+      events: {
+        onReady: (e) => {
+          e.target.playVideo();
+          if (quality !== 'default') e.target.setPlaybackQuality(quality);
+          startOverlayLoop(interval, duration, fadeIn, fadeOut, easing);
+        },
+        onError: (e) => {
+          const msgs = {
+            2:   'Invalid video ID.',
+            5:   'HTML5 player error – the video may have restricted playback or an unsupported format.',
+            100: 'Video not found or private.',
+            101: 'Embedding disabled by owner.',
+            150: 'Embedding disabled by owner.',
+          };
+          showError('YouTube error ' + e.data + ': ' + (msgs[e.data] || 'Unknown error.'));
+        },
+      },
+    };
+    if (videoId) cfg.videoId = videoId;
+
+    const create = () => { ytPlayer = new YT.Player('player', cfg); };
+    window.YT && window.YT.Player ? create() : (window.onYouTubeIframeAPIReady = create);
+  }
+
+  // ── Overlay loop ──
+  function startOverlayLoop(intervalSec, durationSec, fadeIn, fadeOut, easing) {
+    const overlay = document.getElementById('overlay');
+    const fadeOutMs = Math.round(fadeOut * 1000);
+
+    const show = () => {
+      overlay.style.display = 'block';
+      overlay.style.transition = `opacity ${fadeIn}s ${easing}`;
+      void overlay.offsetWidth; // force reflow so transition fires from opacity:0
+      overlay.classList.add('visible');
+
+      setTimeout(() => {
+        overlay.style.transition = `opacity ${fadeOut}s ${easing}`;
+        overlay.classList.remove('visible');
+        // hide from DOM only after the fade-out transition completes
+        setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
+      }, durationSec * 1000);
+    };
+
+    setInterval(show, intervalSec * 1000);
+  }
+
+  // ── Keyboard ──
+  document.addEventListener('keydown', (e) => {
+    if (!ytPlayer || typeof ytPlayer.getPlayerState !== 'function') return;
+    if (e.code === 'Space') {
+      e.preventDefault();
+      ytPlayer.getPlayerState() === 1 ? ytPlayer.pauseVideo() : ytPlayer.playVideo();
+    }
+  });
+</script>
+</body>
+</html>
