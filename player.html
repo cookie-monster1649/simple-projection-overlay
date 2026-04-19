@@ -53,7 +53,7 @@
 <script src="https://www.youtube.com/iframe_api"></script>
 <script>
   // ── Config from manager ──
-  // { url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }
+  // { videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }
   const config = (() => {
     try { return JSON.parse(localStorage.getItem('projector_active') || 'null'); }
     catch { return null; }
@@ -65,13 +65,14 @@
     init(config);
   }
 
-  function init({ url, imageDataUrl, interval, duration, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default' }) {
+  function init({ videos, imageDataUrl, interval, duration, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default' }) {
     document.getElementById('overlay').style.backgroundImage = `url(${imageDataUrl})`;
     setTimeout(() => document.getElementById('hint').remove(), 6000);
 
-    const parsed = parseYouTube(url);
-    if (!parsed) { showError('Invalid YouTube URL in the saved set.'); return; }
-    buildPlayer(parsed, { interval, duration, fadeIn, fadeOut, easing, quality });
+    if (!videos?.length) { showError('No videos in this set.'); return; }
+    const first = parseYouTube(videos[0]);
+    if (!first) { showError('Invalid YouTube URL in the saved set.'); return; }
+    buildPlayer(videos, { interval, duration, fadeIn, fadeOut, easing, quality });
   }
 
   function showError(html) {
@@ -103,14 +104,17 @@
 
   // ── Player ──
   let ytPlayer = null;
+  let currentVideoIndex = 0;
 
-  function buildPlayer({ videoId, listId }, { interval, duration, fadeIn, fadeOut, easing, quality }) {
+  function buildPlayer(videos, { interval, duration, fadeIn, fadeOut, easing, quality }) {
+    const first = parseYouTube(videos[0]);
+
     const playerVars = {
       autoplay: 1, controls: 0, rel: 0, modestbranding: 1,
       playsinline: 1, fs: 0, iv_load_policy: 3, enablejsapi: 1,
       origin: window.location.origin,
     };
-    if (listId) { playerVars.listType = 'playlist'; playerVars.list = listId; }
+    if (first.listId) { playerVars.listType = 'playlist'; playerVars.list = first.listId; }
 
     const cfg = {
       width: '100%', height: '100%',
@@ -124,6 +128,20 @@
           if (quality !== 'default') e.target.setPlaybackQuality(quality);
           startOverlayLoop(interval, duration, fadeIn, fadeOut, easing);
         },
+        onStateChange: (e) => {
+          // State 0 = ended. Advance to next video in the list (wraps to start).
+          if (e.data === 0 && videos.length > 1) {
+            currentVideoIndex = (currentVideoIndex + 1) % videos.length;
+            const next = parseYouTube(videos[currentVideoIndex]);
+            if (!next) return;
+            if (next.listId) {
+              ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
+            } else if (next.videoId) {
+              ytPlayer.loadVideoById(next.videoId);
+            }
+            if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
+          }
+        },
         onError: (e) => {
           const msgs = {
             2:   'Invalid video ID.',
@@ -136,7 +154,7 @@
         },
       },
     };
-    if (videoId) cfg.videoId = videoId;
+    if (first.videoId) cfg.videoId = first.videoId;
 
     const create = () => { ytPlayer = new YT.Player('player', cfg); };
     window.YT && window.YT.Player ? create() : (window.onYouTubeIframeAPIReady = create);

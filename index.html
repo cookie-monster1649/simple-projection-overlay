@@ -69,6 +69,14 @@
   .form-actions { display: flex; gap: 0.75rem; margin-top: 1.75rem; }
   .form-error { color: #ff8a6b; font-family: ui-monospace, monospace; font-size: 0.8rem; margin-top: 1rem; min-height: 1em; }
 
+  /* ── Video list ── */
+  .video-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.6rem; }
+  .video-item { display: flex; align-items: center; gap: 0.6rem; }
+  .video-num  { font-family: ui-monospace, monospace; font-size: 0.68rem; color: var(--muted); width: 1.2rem; flex-shrink: 0; text-align: right; }
+  .video-item input[type="text"] { flex: 1; width: auto; }
+  .remove-video { background: transparent; border: none; color: var(--muted); font-size: 1.1rem; line-height: 1; padding: 0 0.25rem; cursor: pointer; flex-shrink: 0; }
+  .remove-video:hover { color: var(--danger); }
+
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -96,9 +104,10 @@
       <input type="text" id="f-name" placeholder="e.g. Sunday Service">
     </div>
     <div class="field">
-      <label for="f-url">YouTube URL</label>
-      <input type="text" id="f-url" placeholder="https://www.youtube.com/watch?v=...">
-      <div class="hint">Single videos, playlists and livestreams all work.</div>
+      <label>Videos (played in order)</label>
+      <div class="video-list" id="f-videos"></div>
+      <button type="button" class="btn btn-ghost btn-sm" id="add-video-btn">+ Add video</button>
+      <div class="hint">Single videos, playlists and livestreams all work. Each entry plays when the previous one ends.</div>
     </div>
     <div class="field">
       <label for="f-image">Overlay image (PNG with transparency recommended)</label>
@@ -160,11 +169,14 @@
 </div>
 <script>
 // ── Storage ──
-// sets: [{ id, name, url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }]
+// sets: [{ id, name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }]
 
 function loadSets() {
-  try { return JSON.parse(localStorage.getItem('projector_sets') || '[]'); }
-  catch { return []; }
+  try {
+    const raw = JSON.parse(localStorage.getItem('projector_sets') || '[]');
+    // Migrate sets saved before multi-video support (had a single `url` field)
+    return raw.map(s => (!s.videos && s.url) ? { ...s, videos: [s.url] } : s);
+  } catch { return []; }
 }
 function saveSets(sets) { localStorage.setItem('projector_sets', JSON.stringify(sets)); }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
@@ -173,6 +185,7 @@ function uid() { return Date.now().toString(36) + Math.random().toString(36).sli
 let sets = loadSets();
 let editingId = null;           // null = new set, string = editing existing
 let pendingImageDataUrl = null; // image selected in the current form session
+let formVideos = [''];          // video URLs being edited in the current form session
 let playerWin = null;           // reference to the open output window
 let activeSetId = null;         // id of the set currently in the player
 
@@ -185,11 +198,12 @@ function renderList() {
     return;
   }
 
-  // { id, name, url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }
+  // { id, name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }
   const windowOpen = playerWin && !playerWin.closed;
 
   list.innerHTML = sets.map(s => {
-    const isLive = windowOpen && s.id === activeSetId;
+    const isLive    = windowOpen && s.id === activeSetId;
+    const videoDesc = s.videos?.length === 1 ? esc(shortUrl(s.videos[0])) : `${s.videos?.length ?? 0} videos`;
     const launchBtn = isLive
       ? `<button class="btn btn-live btn-sm" disabled>● Live</button>`
       : windowOpen
@@ -200,7 +214,7 @@ function renderList() {
       <div class="set-thumb" style="background-image:url(${s.imageDataUrl || ''})"></div>
       <div class="set-meta">
         <div class="set-name">${esc(s.name)}</div>
-        <div class="set-detail">${esc(shortUrl(s.url))} &nbsp;·&nbsp; every ${s.interval}s / on for ${s.duration}s &nbsp;·&nbsp; fade ${s.fadeIn ?? 0.35}s↑ ${s.fadeOut ?? 0.35}s↓ &nbsp;·&nbsp; ${qualityLabel(s.quality)}</div>
+        <div class="set-detail">${videoDesc} &nbsp;·&nbsp; every ${s.interval}s / on for ${s.duration}s &nbsp;·&nbsp; fade ${s.fadeIn ?? 0.35}s↑ ${s.fadeOut ?? 0.35}s↓ &nbsp;·&nbsp; ${qualityLabel(s.quality)}</div>
       </div>
       <div class="set-actions">
         <button class="btn btn-ghost  btn-sm" onclick="editSet('${s.id}')">Edit</button>
@@ -235,7 +249,6 @@ function openForm(set = null) {
 
   document.getElementById('form-title').textContent   = set ? 'Edit set' : 'New set';
   document.getElementById('f-name').value             = set?.name     ?? '';
-  document.getElementById('f-url').value              = set?.url      ?? '';
   document.getElementById('f-interval').value         = set?.interval ?? 60;
   document.getElementById('f-duration').value         = set?.duration ?? 5;
   document.getElementById('f-fade-in').value          = set?.fadeIn   ?? 0.35;
@@ -245,7 +258,9 @@ function openForm(set = null) {
   document.getElementById('f-image').value            = '';
   document.getElementById('f-preview').style.backgroundImage = set?.imageDataUrl ? `url(${set.imageDataUrl})` : '';
   document.getElementById('form-error').textContent   = '';
+  formVideos = set?.videos?.length ? [...set.videos] : [''];
   document.getElementById('form-panel').hidden        = false;
+  renderVideoInputs();
 
   document.getElementById('form-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   document.getElementById('f-name').focus();
@@ -255,6 +270,40 @@ function closeForm() {
   document.getElementById('form-panel').hidden = true;
   editingId = null;
   pendingImageDataUrl = null;
+  formVideos = [''];
+}
+
+// ── Video list UI ──
+function renderVideoInputs() {
+  const container = document.getElementById('f-videos');
+  container.innerHTML = formVideos.map((url, i) => `
+    <div class="video-item">
+      <span class="video-num">${i + 1}.</span>
+      <input type="text" data-idx="${i}" value="${esc(url)}" placeholder="https://www.youtube.com/watch?v=...">
+      ${formVideos.length > 1
+        ? `<button type="button" class="remove-video" onclick="removeVideo(${i})" title="Remove">×</button>`
+        : '<span style="width:1.4rem"></span>'}
+    </div>`).join('');
+
+  // Sync input changes back into formVideos
+  container.querySelectorAll('input[type="text"]').forEach(input => {
+    input.addEventListener('input', e => {
+      formVideos[parseInt(e.target.dataset.idx)] = e.target.value;
+    });
+  });
+}
+
+function addVideo() {
+  formVideos.push('');
+  renderVideoInputs();
+  // Focus the new empty input
+  const inputs = document.getElementById('f-videos').querySelectorAll('input');
+  inputs[inputs.length - 1]?.focus();
+}
+
+function removeVideo(i) {
+  formVideos.splice(i, 1);
+  renderVideoInputs();
 }
 
 // ── Image picker ──
@@ -275,7 +324,7 @@ document.getElementById('save-btn').addEventListener('click', () => {
   err.textContent = '';
 
   const name     = document.getElementById('f-name').value.trim();
-  const url      = document.getElementById('f-url').value.trim();
+  const videos   = formVideos.map(u => u.trim()).filter(Boolean);
   const interval = Math.max(1,   parseInt(document.getElementById('f-interval').value, 10) || 60);
   const duration = Math.max(1,   parseInt(document.getElementById('f-duration').value, 10) || 5);
   const fadeIn   = Math.max(0,  parseFloat(document.getElementById('f-fade-in').value)  || 0.35);
@@ -283,8 +332,8 @@ document.getElementById('save-btn').addEventListener('click', () => {
   const easing   = document.getElementById('f-easing').value  || 'ease';
   const quality  = document.getElementById('f-quality').value || 'default';
 
-  if (!name) { err.textContent = 'Please give this set a name.'; return; }
-  if (!url)  { err.textContent = 'Please enter a YouTube URL.'; return; }
+  if (!name)           { err.textContent = 'Please give this set a name.'; return; }
+  if (!videos.length)  { err.textContent = 'Please enter at least one YouTube URL.'; return; }
 
   // Keep existing image when editing and no new file was chosen
   const existing     = editingId ? sets.find(s => s.id === editingId) : null;
@@ -292,9 +341,9 @@ document.getElementById('save-btn').addEventListener('click', () => {
   if (!imageDataUrl) { err.textContent = 'Please choose an overlay image.'; return; }
 
   if (editingId) {
-    sets = sets.map(s => s.id === editingId ? { ...s, name, url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality } : s);
+    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality } : s);
   } else {
-    sets.push({ id: uid(), name, url, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality });
+    sets.push({ id: uid(), name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality });
   }
 
   saveSets(sets);
@@ -304,6 +353,7 @@ document.getElementById('save-btn').addEventListener('click', () => {
 
 document.getElementById('cancel-btn').addEventListener('click', closeForm);
 document.getElementById('new-btn').addEventListener('click', () => openForm());
+document.getElementById('add-video-btn').addEventListener('click', addVideo);
 
 // ── Edit / Delete / Launch (called from inline onclick) ──
 function editSet(id) {
@@ -328,7 +378,7 @@ function launchSet(id) {
 
   // Write active config so player.html reads it fresh on load
   localStorage.setItem('projector_active', JSON.stringify({
-    url: set.url, imageDataUrl: set.imageDataUrl,
+    videos: set.videos, imageDataUrl: set.imageDataUrl,
     interval: set.interval, duration: set.duration,
     fadeIn:  set.fadeIn  ?? 0.35,
     fadeOut: set.fadeOut ?? 0.35,
