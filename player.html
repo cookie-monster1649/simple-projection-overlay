@@ -18,8 +18,6 @@
   #overlay {
     position: absolute; inset: 0;
     pointer-events: none;
-    background-size: contain;
-    background-position: center;
     background-repeat: no-repeat;
     opacity: 0;
     /* transition is set dynamically per fade-in / fade-out from config */
@@ -433,7 +431,9 @@
       writeState();
       currentImageIndex = (currentImageIndex + 1) % images.length;
 
-      overlay.style.backgroundImage = `url(${img.imageDataUrl})`;
+      overlay.style.backgroundImage    = `url(${img.imageDataUrl})`;
+      overlay.style.backgroundSize     = img.size ? `${img.size}%` : '80%';
+      overlay.style.backgroundPosition = img.position || 'center';
 
       if (!bouncing) overlay.style.display = 'block';
       overlay.style.transition = `opacity ${fadeIn}s ${easing}`;

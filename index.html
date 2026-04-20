@@ -99,14 +99,29 @@
   .form-error { color: #ff8a6b; font-family: ui-monospace, monospace; font-size: 0.8rem; margin-top: 1rem; min-height: 1em; }
 
   /* ── Image list ── */
-  .image-list { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 0.6rem; }
-  .image-item { display: flex; align-items: center; gap: 0.6rem; }
-  .image-thumb { width: 60px; height: 36px; background: #000 center/contain no-repeat; border: 1px solid var(--line); border-radius: 2px; flex-shrink: 0; }
+  .image-list { display: flex; flex-direction: column; gap: 0.9rem; margin-bottom: 0.6rem; }
+  .image-item { display: flex; flex-direction: column; gap: 0.35rem; }
+  .image-item-top { display: flex; align-items: center; gap: 0.6rem; }
+  .image-item-bottom { display: flex; align-items: center; gap: 0.9rem; padding-left: calc(96px + 0.6rem); }
+  .image-thumb { width: 96px; aspect-ratio: 16/9; background: #000 no-repeat; border: 1px solid var(--line); border-radius: 2px; flex-shrink: 0; }
   .field .image-item input[type="file"]   { width: auto; flex: 1; min-width: 0; font-size: 0.8rem; padding: 0.3rem 0; }
   .field .image-item input[type="number"] { width: 52px; text-align: center; }
   .image-dur-unit { font-family: ui-monospace, monospace; font-size: 0.75rem; color: var(--muted); flex-shrink: 0; }
   .remove-image { background: transparent; border: none; color: var(--muted); font-size: 1.1rem; line-height: 1; padding: 0 0.25rem; cursor: pointer; flex-shrink: 0; }
   .remove-image:hover { color: var(--danger); }
+  .move-image { background: transparent; border: none; color: var(--muted); font-size: 0.85rem; line-height: 1; padding: 0 0.2rem; cursor: pointer; flex-shrink: 0; }
+  .move-image:hover:not(:disabled) { color: var(--ink); }
+  .move-image:disabled { opacity: 0.25; cursor: default; }
+  /* ── Position picker ── */
+  .pos-grid { display: grid; grid-template-columns: repeat(3, 14px); grid-template-rows: repeat(3, 14px); gap: 2px; flex-shrink: 0; }
+  .pos-cell { width: 14px; height: 14px; background: var(--line); border: none; border-radius: 2px; cursor: pointer; padding: 0; }
+  .pos-cell:hover { background: var(--muted); }
+  .pos-cell.active { background: var(--accent); }
+  /* ── Size slider ── */
+  .size-ctrl { display: flex; align-items: center; gap: 0.45rem; flex: 1; min-width: 0; }
+  .size-ctrl-label { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); flex-shrink: 0; }
+  .size-ctrl input[type="range"] { flex: 1; accent-color: var(--accent); cursor: pointer; min-width: 0; }
+  .size-val { width: 52px; text-align: center; flex-shrink: 0; }
 
   /* ── Bounce toggle ── */
   .field-inline { display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-family: ui-serif, Georgia, serif; font-size: 0.95rem; color: var(--ink); }
@@ -257,11 +272,6 @@
       <div class="form-group-header">
         <p class="form-group-title">Overlay images</p>
         <p class="form-group-desc">Cycled in order · PNG with transparency recommended</p>
-      </div>
-      <div class="list-cols list-cols--image">
-        <span></span>
-        <span>Image file</span>
-        <span>Duration</span>
       </div>
       <div class="image-list" id="f-images"></div>
       <button type="button" class="btn btn-ghost btn-sm" id="add-image-btn">+ Add image</button>
@@ -543,18 +553,46 @@ function maybeClose() {
 }
 
 // ── Image list UI ──
+const POS_CELLS = [
+  'left top','center top','right top',
+  'left center','center center','right center',
+  'left bottom','center bottom','right bottom',
+];
+
+function thumbStyle(img) {
+  const size = img.size ?? 100;
+  const pos  = img.position || 'center center';
+  return `background-image:url(${img.imageDataUrl || ''});background-size:${size}%;background-position:${pos};`;
+}
+
 function renderImageInputs() {
   const container = document.getElementById('f-images');
-  container.innerHTML = formImages.map((img, i) => `
+  container.innerHTML = formImages.map((img, i) => {
+    const posGrid = POS_CELLS.map(p =>
+      `<button type="button" class="pos-cell${(img.position || 'center center') === p ? ' active' : ''}" data-idx="${i}" data-pos="${p}" title="${p}"></button>`
+    ).join('');
+    return `
     <div class="image-item">
-      <div class="image-thumb" style="background-image:url(${img.imageDataUrl || ''})"></div>
-      <input type="file" data-idx="${i}" accept="image/*" title="Choose image">
-      <input type="number" data-idx="${i}" value="${img.duration}" min="1" step="1" title="Seconds on screen">
-      <span class="image-dur-unit">s</span>
-      ${formImages.length > 1
-        ? `<button type="button" class="remove-image" onclick="removeImage(${i})" title="Remove">×</button>`
-        : '<span style="width:1.2rem"></span>'}
-    </div>`).join('');
+      <div class="image-item-top">
+        <div class="image-thumb" data-idx="${i}" style="${thumbStyle(img)}"></div>
+        <input type="file" data-idx="${i}" accept="image/*" title="Choose image">
+        <input type="number" data-idx="${i}" data-kind="duration" value="${img.duration}" min="1" step="1" title="Seconds on screen">
+        <span class="image-dur-unit">s</span>
+        ${formImages.length > 1 ? `
+          <button type="button" class="move-image" onclick="moveImage(${i},-1)" ${i === 0 ? 'disabled' : ''} title="Move up">↑</button>
+          <button type="button" class="move-image" onclick="moveImage(${i}, 1)" ${i === formImages.length - 1 ? 'disabled' : ''} title="Move down">↓</button>
+          <button type="button" class="remove-image" onclick="removeImage(${i})" title="Remove">×</button>` : ''}
+      </div>
+      <div class="image-item-bottom">
+        <div class="pos-grid">${posGrid}</div>
+        <div class="size-ctrl">
+          <span class="size-ctrl-label">Size</span>
+          <input type="range" data-idx="${i}" data-kind="size-range" min="10" max="200" step="1" value="${img.size ?? 80}">
+          <input type="number" class="size-val" data-idx="${i}" data-kind="size" min="10" max="200" step="1" value="${img.size ?? 80}" title="Size %">
+        </div>
+      </div>
+    </div>`;
+  }).join('');
 
   container.querySelectorAll('input[type="file"]').forEach(input => {
     input.addEventListener('change', e => {
@@ -564,9 +602,8 @@ function renderImageInputs() {
       const reader = new FileReader();
       reader.onload = ev => {
         formImages[idx].imageDataUrl = ev.target.result;
-        // Update thumbnail in-place without re-rendering the whole list
-        e.target.closest('.image-item').querySelector('.image-thumb')
-          .style.backgroundImage = `url(${ev.target.result})`;
+        const item = e.target.closest('.image-item');
+        item.querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
       };
       reader.onerror = () => {
         document.getElementById('form-error').textContent = 'Failed to read image file.';
@@ -575,15 +612,58 @@ function renderImageInputs() {
     });
   });
 
-  container.querySelectorAll('input[type="number"]').forEach(input => {
+  container.querySelectorAll('input[data-kind="duration"]').forEach(input => {
     input.addEventListener('input', e => {
       formImages[parseInt(e.target.dataset.idx)].duration = Math.max(1, parseFloat(e.target.value) || 5);
     });
   });
+
+  container.querySelectorAll('input[data-kind="size-range"]').forEach(input => {
+    input.addEventListener('input', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      const val = parseInt(e.target.value, 10);
+      formImages[idx].size = val;
+      formDirty = true;
+      const item = e.target.closest('.image-item');
+      item.querySelector('input[data-kind="size"]').value = val;
+      item.querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
+    });
+  });
+
+  container.querySelectorAll('input[data-kind="size"]').forEach(input => {
+    input.addEventListener('input', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      const val = Math.min(200, Math.max(10, parseInt(e.target.value, 10) || 80));
+      formImages[idx].size = val;
+      formDirty = true;
+      const item = e.target.closest('.image-item');
+      item.querySelector('input[data-kind="size-range"]').value = val;
+      item.querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
+    });
+  });
+
+  container.querySelectorAll('.pos-cell').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      formImages[idx].position = e.target.dataset.pos;
+      formDirty = true;
+      e.target.closest('.pos-grid').querySelectorAll('.pos-cell').forEach(c => c.classList.remove('active'));
+      e.target.classList.add('active');
+      e.target.closest('.image-item').querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
+    });
+  });
+}
+
+function moveImage(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= formImages.length) return;
+  [formImages[i], formImages[j]] = [formImages[j], formImages[i]];
+  formDirty = true;
+  renderImageInputs();
 }
 
 function addImage() {
-  formImages.push({ imageDataUrl: null, duration: 5 });
+  formImages.push({ imageDataUrl: null, duration: 5, size: 80, position: 'center center' });
   renderImageInputs();
 }
 
@@ -645,7 +725,7 @@ document.getElementById('save-btn').addEventListener('click', () => {
 
   const images = formImages
     .filter(img => img.imageDataUrl)
-    .map(img => ({ imageDataUrl: img.imageDataUrl, duration: Math.max(1, img.duration || 5) }));
+    .map(img => ({ imageDataUrl: img.imageDataUrl, duration: Math.max(1, img.duration || 5), size: img.size ?? 80, position: img.position || 'center center' }));
 
   if (!name) { err.textContent = 'Please give this set a name.'; return; }
 
