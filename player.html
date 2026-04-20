@@ -449,6 +449,7 @@
 
     // Expose so seekImage() can cancel and restart
     overlayShow       = show;
+    show();
     overlayIntervalId = setInterval(show, overlayIntervalMs);
   }
 
