@@ -69,6 +69,11 @@
   .form-actions { display: flex; gap: 0.75rem; margin-top: 1.75rem; }
   .form-error { color: #ff8a6b; font-family: ui-monospace, monospace; font-size: 0.8rem; margin-top: 1rem; min-height: 1em; }
 
+  /* ── Bounce toggle ── */
+  .field-inline { display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-family: ui-serif, Georgia, serif; font-size: 0.95rem; color: var(--ink); }
+  .field-inline input[type="checkbox"] { width: auto; accent-color: var(--accent); width: 1rem; height: 1rem; cursor: pointer; }
+  .bounce-opts { margin-top: 0.75rem; }
+
   /* ── Video list ── */
   .video-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.6rem; }
   .video-item { display: flex; align-items: center; gap: 0.6rem; }
@@ -157,6 +162,22 @@
           <option value="hd1440">1440p</option>
           <option value="hd2160">2160p (4K)</option>
         </select>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-inline">
+        <input type="checkbox" id="f-bounce">
+        Bouncing mode – image moves around the screen like a DVD screensaver
+      </label>
+      <div class="row bounce-opts">
+        <div class="field">
+          <label for="f-bounce-size">Image size (px)</label>
+          <input type="number" id="f-bounce-size" value="200" min="50" step="10">
+        </div>
+        <div class="field">
+          <label for="f-bounce-speed">Speed (px / second)</label>
+          <input type="number" id="f-bounce-speed" value="150" min="10" max="600" step="10">
+        </div>
       </div>
     </div>
     <div class="form-actions">
@@ -253,8 +274,11 @@ function openForm(set = null) {
   document.getElementById('f-duration').value         = set?.duration ?? 5;
   document.getElementById('f-fade-in').value          = set?.fadeIn   ?? 0.35;
   document.getElementById('f-fade-out').value         = set?.fadeOut  ?? 0.35;
-  document.getElementById('f-easing').value           = set?.easing   ?? 'ease';
-  document.getElementById('f-quality').value          = set?.quality  ?? 'default';
+  document.getElementById('f-easing').value           = set?.easing      ?? 'ease';
+  document.getElementById('f-quality').value          = set?.quality     ?? 'default';
+  document.getElementById('f-bounce').checked         = set?.bounce      ?? false;
+  document.getElementById('f-bounce-size').value      = set?.bounceSize  ?? 200;
+  document.getElementById('f-bounce-speed').value     = set?.bounceSpeed ?? 150;
   document.getElementById('f-image').value            = '';
   document.getElementById('f-preview').style.backgroundImage = set?.imageDataUrl ? `url(${set.imageDataUrl})` : '';
   document.getElementById('form-error').textContent   = '';
@@ -329,8 +353,11 @@ document.getElementById('save-btn').addEventListener('click', () => {
   const duration = Math.max(1,   parseInt(document.getElementById('f-duration').value, 10) || 5);
   const fadeIn   = Math.max(0,  parseFloat(document.getElementById('f-fade-in').value)  || 0.35);
   const fadeOut  = Math.max(0,  parseFloat(document.getElementById('f-fade-out').value) || 0.35);
-  const easing   = document.getElementById('f-easing').value  || 'ease';
-  const quality  = document.getElementById('f-quality').value || 'default';
+  const easing      = document.getElementById('f-easing').value  || 'ease';
+  const quality     = document.getElementById('f-quality').value || 'default';
+  const bounce      = document.getElementById('f-bounce').checked;
+  const bounceSize  = Math.max(50,  parseInt(document.getElementById('f-bounce-size').value,  10) || 200);
+  const bounceSpeed = Math.max(10,  parseInt(document.getElementById('f-bounce-speed').value, 10) || 150);
 
   if (!name)           { err.textContent = 'Please give this set a name.'; return; }
   if (!videos.length)  { err.textContent = 'Please enter at least one YouTube URL.'; return; }
@@ -341,9 +368,9 @@ document.getElementById('save-btn').addEventListener('click', () => {
   if (!imageDataUrl) { err.textContent = 'Please choose an overlay image.'; return; }
 
   if (editingId) {
-    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality } : s);
+    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed } : s);
   } else {
-    sets.push({ id: uid(), name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality });
+    sets.push({ id: uid(), name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed });
   }
 
   saveSets(sets);
@@ -382,8 +409,11 @@ function launchSet(id) {
     interval: set.interval, duration: set.duration,
     fadeIn:  set.fadeIn  ?? 0.35,
     fadeOut: set.fadeOut ?? 0.35,
-    easing:  set.easing  ?? 'ease',
-    quality: set.quality ?? 'default',
+    easing:      set.easing      ?? 'ease',
+    quality:     set.quality     ?? 'default',
+    bounce:      set.bounce      ?? false,
+    bounceSize:  set.bounceSize  ?? 200,
+    bounceSpeed: set.bounceSpeed ?? 150,
   }));
 
   if (playerWin && !playerWin.closed) {

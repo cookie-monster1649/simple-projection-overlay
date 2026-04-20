@@ -22,6 +22,10 @@
   }
   #overlay.visible { opacity: 1; }
 
+  /* In bouncing mode the overlay is a fixed-size box that JS repositions each frame.
+     Override the full-screen inset so right/bottom don't stretch it. */
+  #overlay.bouncing { right: auto; bottom: auto; }
+
   #hint {
     position: fixed; top: 1rem; right: 1rem;
     background: rgba(0,0,0,0.65); color: #f4f1ea;
@@ -65,14 +69,14 @@
     init(config);
   }
 
-  function init({ videos, imageDataUrl, interval, duration, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default' }) {
+  function init({ videos, imageDataUrl, interval, duration, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default', bounce = false, bounceSize = 200, bounceSpeed = 150 }) {
     document.getElementById('overlay').style.backgroundImage = `url(${imageDataUrl})`;
     setTimeout(() => document.getElementById('hint').remove(), 6000);
 
     if (!videos?.length) { showError('No videos in this set.'); return; }
     const first = parseYouTube(videos[0]);
     if (!first) { showError('Invalid YouTube URL in the saved set.'); return; }
-    buildPlayer(videos, { interval, duration, fadeIn, fadeOut, easing, quality });
+    buildPlayer(videos, { interval, duration, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed });
   }
 
   function showError(html) {
@@ -126,7 +130,8 @@
         onReady: (e) => {
           e.target.playVideo();
           if (quality !== 'default') e.target.setPlaybackQuality(quality);
-          startOverlayLoop(interval, duration, fadeIn, fadeOut, easing);
+          if (bounce) startBounce(bounceSize, bounceSpeed);
+          startOverlayLoop(interval, duration, fadeIn, fadeOut, easing, bounce);
         },
         onStateChange: (e) => {
           // State 0 = ended. Advance to next video in the list (wraps to start).
@@ -161,12 +166,17 @@
   }
 
   // ── Overlay loop ──
-  function startOverlayLoop(intervalSec, durationSec, fadeIn, fadeOut, easing) {
-    const overlay = document.getElementById('overlay');
+  function startOverlayLoop(intervalSec, durationSec, fadeIn, fadeOut, easing, bouncing) {
+    const overlay   = document.getElementById('overlay');
     const fadeOutMs = Math.round(fadeOut * 1000);
 
-    const show = () => {
+    if (bouncing) {
+      // Bounce mode: element stays in the DOM always (opacity only, no display toggling)
       overlay.style.display = 'block';
+    }
+
+    const show = () => {
+      if (!bouncing) overlay.style.display = 'block';
       overlay.style.transition = `opacity ${fadeIn}s ${easing}`;
       void overlay.offsetWidth; // force reflow so transition fires from opacity:0
       overlay.classList.add('visible');
@@ -174,12 +184,48 @@
       setTimeout(() => {
         overlay.style.transition = `opacity ${fadeOut}s ${easing}`;
         overlay.classList.remove('visible');
-        // hide from DOM only after the fade-out transition completes
-        setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
+        if (!bouncing) setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
       }, durationSec * 1000);
     };
 
     setInterval(show, intervalSec * 1000);
+  }
+
+  // ── Bounce animation ──
+  function startBounce(sizePx, speedPxPerSec) {
+    const overlay = document.getElementById('overlay');
+    overlay.classList.add('bouncing');
+    overlay.style.width  = sizePx + 'px';
+    overlay.style.height = sizePx + 'px';
+
+    // Start at a random position with a non-axis-aligned angle (avoids boring straight paths)
+    let x  = Math.random() * (window.innerWidth  - sizePx);
+    let y  = Math.random() * (window.innerHeight - sizePx);
+    const angle = (20 + Math.random() * 70) * (Math.PI / 180); // 20–90°
+    let vx = speedPxPerSec * Math.cos(angle) * (Math.random() > 0.5 ? 1 : -1);
+    let vy = speedPxPerSec * Math.sin(angle) * (Math.random() > 0.5 ? 1 : -1);
+
+    let lastTime = null;
+
+    function frame(timestamp) {
+      const dt = lastTime === null ? 0 : (timestamp - lastTime) / 1000; // seconds
+      lastTime = timestamp;
+
+      x += vx * dt;
+      y += vy * dt;
+
+      // Reflect off edges
+      if (x + sizePx >= window.innerWidth)  { x = window.innerWidth  - sizePx; vx = -Math.abs(vx); }
+      if (x <= 0)                            { x = 0;                           vx =  Math.abs(vx); }
+      if (y + sizePx >= window.innerHeight) { y = window.innerHeight - sizePx; vy = -Math.abs(vy); }
+      if (y <= 0)                            { y = 0;                           vy =  Math.abs(vy); }
+
+      overlay.style.left = x + 'px';
+      overlay.style.top  = y + 'px';
+      requestAnimationFrame(frame);
+    }
+
+    requestAnimationFrame(frame);
   }
 
   // ── Keyboard ──
