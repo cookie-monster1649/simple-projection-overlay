@@ -57,11 +57,24 @@
 <script src="https://www.youtube.com/iframe_api"></script>
 <script>
   // ── Config from manager ──
-  // { videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }
+  // { videos, images:[{imageDataUrl,duration}], interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed }
   const config = (() => {
     try { return JSON.parse(localStorage.getItem('projector_active') || 'null'); }
     catch { return null; }
   })();
+
+  // ── Module-level state ──
+  // Declared here so all synchronous code in buildPlayer and callbacks can reach them
+  // without hitting the TDZ (init(config) is called immediately below).
+  let ytPlayer          = null;
+  let currentVideoIndex = 0;
+  let activeVideos      = [];
+
+  let currentImageIndex  = 0;
+  let activeImages       = []; // mirrors images array for bounds-checking seek commands
+  let overlayShow        = null; // the show() fn assigned by startOverlayLoop
+  let overlayIntervalId  = null;
+  let overlayIntervalMs  = 0;
 
   if (!config) {
     showError('No active set found. <a href="index.html">Go back to the manager</a> and click Launch.');
@@ -69,14 +82,22 @@
     init(config);
   }
 
-  function init({ videos, imageDataUrl, interval, duration, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default', bounce = false, bounceSize = 200, bounceSpeed = 150 }) {
-    document.getElementById('overlay').style.backgroundImage = `url(${imageDataUrl})`;
+  // ── YouTube API load watchdog ──
+  // If the API script never calls back (network blip, blocked, etc.), fail visibly
+  // rather than sitting on a black screen forever.
+  setTimeout(() => {
+    if (!ytPlayer) showError('YouTube API failed to load. Check your internet connection and <a href="">reload this page</a>.');
+  }, 8000);
+
+  function init({ videos, images, interval, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default', bounce = false, bounceSize = 200, bounceSpeed = 150 }) {
+    if (!images?.length) { showError('No images in this set.'); return; }
+    document.getElementById('overlay').style.backgroundImage = `url(${images[0].imageDataUrl})`;
     setTimeout(() => document.getElementById('hint').remove(), 6000);
 
     if (!videos?.length) { showError('No videos in this set.'); return; }
     const first = parseYouTube(videos[0]);
     if (!first) { showError('Invalid YouTube URL in the saved set.'); return; }
-    buildPlayer(videos, { interval, duration, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed });
+    buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed });
   }
 
   function showError(html) {
@@ -85,6 +106,49 @@
     el.style.display = 'grid';
     el.innerHTML = html;
   }
+
+  // ── Inter-window state / command bus ──
+  // Manager reads projector_state; manager writes projector_command.
+  function writeState() {
+    try {
+      localStorage.setItem('projector_state', JSON.stringify({
+        videoIndex: currentVideoIndex,
+        imageIndex: currentImageIndex,
+      }));
+    } catch { /* non-fatal – manager will hold its last-known state */ }
+  }
+
+  function seekVideo(index, startSeconds) {
+    if (!ytPlayer || !activeVideos[index]) return;
+    const parsed = parseYouTube(activeVideos[index]);
+    if (!parsed) return;
+    currentVideoIndex = index;
+    if (parsed.listId) {
+      ytPlayer.loadPlaylist({ list: parsed.listId, listType: 'playlist' });
+    } else if (parsed.videoId) {
+      // startSeconds is only passed by the stall watchdog so recovery resumes in-place
+      ytPlayer.loadVideoById(startSeconds > 0 ? { videoId: parsed.videoId, startSeconds } : parsed.videoId);
+    }
+    if (config.quality !== 'default') ytPlayer.setPlaybackQuality(config.quality);
+    writeState();
+  }
+
+  function seekImage(index) {
+    if (!overlayShow || !activeImages.length) return;
+    currentImageIndex = Math.max(0, Math.min(index, activeImages.length - 1));
+    clearInterval(overlayIntervalId);
+    overlayShow();
+    overlayIntervalId = setInterval(overlayShow, overlayIntervalMs);
+  }
+
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'projector_command') return;
+    try {
+      const cmd = JSON.parse(e.newValue);
+      if (cmd.type === 'seek-video') seekVideo(cmd.index);
+      else if (cmd.type === 'seek-image') seekImage(cmd.index);
+    } catch { /* ignore malformed */ }
+  });
 
   // ── YouTube URL parser ──
   function parseYouTube(url) {
@@ -107,11 +171,11 @@
   }
 
   // ── Player ──
-  let ytPlayer = null;
-  let currentVideoIndex = 0;
-
-  function buildPlayer(videos, { interval, duration, fadeIn, fadeOut, easing, quality }) {
+  function buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed }) {
+    activeVideos = videos;  // expose for seek commands
+    activeImages = images;  // expose for bounds-checking in seekImage
     const first = parseYouTube(videos[0]);
+    let stallTimer = null; // tracks buffering/unstarted watchdog
 
     const playerVars = {
       autoplay: 1, controls: 0, rel: 0, modestbranding: 1,
@@ -131,9 +195,20 @@
           e.target.playVideo();
           if (quality !== 'default') e.target.setPlaybackQuality(quality);
           if (bounce) startBounce(bounceSize, bounceSpeed);
-          startOverlayLoop(interval, duration, fadeIn, fadeOut, easing, bounce);
+          startOverlayLoop(interval, images, fadeIn, fadeOut, easing, bounce);
+          writeState();
         },
         onStateChange: (e) => {
+          // ── Stall watchdog ──
+          // States -1 (unstarted) and 3 (buffering) can get stuck permanently after
+          // a network blip. If either persists for 30 s, force-reload from the same
+          // position. Time is captured now so the seek target doesn't drift.
+          clearTimeout(stallTimer);
+          if (e.data === -1 || e.data === 3) {
+            const resumeAt = ytPlayer.getCurrentTime?.() ?? 0;
+            stallTimer = setTimeout(() => seekVideo(currentVideoIndex, resumeAt), 30000);
+          }
+
           // State 0 = ended. Advance to next video in the list (wraps to start).
           if (e.data === 0 && videos.length > 1) {
             currentVideoIndex = (currentVideoIndex + 1) % videos.length;
@@ -145,9 +220,24 @@
               ytPlayer.loadVideoById(next.videoId);
             }
             if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
+            writeState();
           }
         },
         onError: (e) => {
+          // Errors 100, 101, 150: video unavailable or embedding disabled.
+          // Skip to the next video rather than halting the show – a single blocked
+          // or deleted video shouldn't take down a multi-hour session.
+          if ((e.data === 100 || e.data === 101 || e.data === 150) && videos.length > 1) {
+            currentVideoIndex = (currentVideoIndex + 1) % videos.length;
+            const next = parseYouTube(videos[currentVideoIndex]);
+            if (next) {
+              if (next.listId) ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
+              else if (next.videoId) ytPlayer.loadVideoById(next.videoId);
+              if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
+              writeState();
+              return;
+            }
+          }
           const msgs = {
             2:   'Invalid video ID.',
             5:   'HTML5 player error – the video may have restricted playback or an unsupported format.',
@@ -166,16 +256,22 @@
   }
 
   // ── Overlay loop ──
-  function startOverlayLoop(intervalSec, durationSec, fadeIn, fadeOut, easing, bouncing) {
+  function startOverlayLoop(intervalSec, images, fadeIn, fadeOut, easing, bouncing) {
     const overlay   = document.getElementById('overlay');
     const fadeOutMs = Math.round(fadeOut * 1000);
+    overlayIntervalMs = intervalSec * 1000;
 
-    if (bouncing) {
-      // Bounce mode: element stays in the DOM always (opacity only, no display toggling)
-      overlay.style.display = 'block';
-    }
+    // In bounce mode the element stays in the DOM; only opacity is toggled
+    if (bouncing) overlay.style.display = 'block';
 
     const show = () => {
+      const img = images[currentImageIndex];
+      // Write state before incrementing so manager sees the index of what's on screen
+      writeState();
+      currentImageIndex = (currentImageIndex + 1) % images.length;
+
+      overlay.style.backgroundImage = `url(${img.imageDataUrl})`;
+
       if (!bouncing) overlay.style.display = 'block';
       overlay.style.transition = `opacity ${fadeIn}s ${easing}`;
       void overlay.offsetWidth; // force reflow so transition fires from opacity:0
@@ -185,10 +281,12 @@
         overlay.style.transition = `opacity ${fadeOut}s ${easing}`;
         overlay.classList.remove('visible');
         if (!bouncing) setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
-      }, durationSec * 1000);
+      }, img.duration * 1000);
     };
 
-    setInterval(show, intervalSec * 1000);
+    // Expose so seekImage() can cancel and restart
+    overlayShow       = show;
+    overlayIntervalId = setInterval(show, overlayIntervalMs);
   }
 
   // ── Bounce animation ──

@@ -47,7 +47,8 @@
   .set-thumb { width: 68px; height: 40px; background: #000 center/contain no-repeat; border: 1px solid var(--line); border-radius: 2px; flex-shrink: 0; }
   .set-meta { min-width: 0; }
   .set-name   { font-size: 1rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.2rem; }
-  .set-detail { font-family: ui-monospace, monospace; font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .set-detail { font-family: ui-monospace, monospace; font-size: 0.72rem; color: var(--muted); }
+  .set-detail-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.7; }
   .set-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
 
   /* ── Form panel ── */
@@ -69,6 +70,16 @@
   .form-actions { display: flex; gap: 0.75rem; margin-top: 1.75rem; }
   .form-error { color: #ff8a6b; font-family: ui-monospace, monospace; font-size: 0.8rem; margin-top: 1rem; min-height: 1em; }
 
+  /* ── Image list ── */
+  .image-list { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 0.6rem; }
+  .image-item { display: flex; align-items: center; gap: 0.6rem; }
+  .image-thumb { width: 60px; height: 36px; background: #000 center/contain no-repeat; border: 1px solid var(--line); border-radius: 2px; flex-shrink: 0; }
+  .field .image-item input[type="file"]   { width: auto; flex: 1; min-width: 0; font-size: 0.8rem; padding: 0.3rem 0; }
+  .field .image-item input[type="number"] { width: 52px; text-align: center; }
+  .image-dur-unit { font-family: ui-monospace, monospace; font-size: 0.75rem; color: var(--muted); flex-shrink: 0; }
+  .remove-image { background: transparent; border: none; color: var(--muted); font-size: 1.1rem; line-height: 1; padding: 0 0.25rem; cursor: pointer; flex-shrink: 0; }
+  .remove-image:hover { color: var(--danger); }
+
   /* ── Bounce toggle ── */
   .field-inline { display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-family: ui-serif, Georgia, serif; font-size: 0.95rem; color: var(--ink); }
   .field-inline input[type="checkbox"] { width: auto; accent-color: var(--accent); width: 1rem; height: 1rem; cursor: pointer; }
@@ -81,6 +92,20 @@
   .video-item input[type="text"] { flex: 1; width: auto; }
   .remove-video { background: transparent; border: none; color: var(--muted); font-size: 1.1rem; line-height: 1; padding: 0 0.25rem; cursor: pointer; flex-shrink: 0; }
   .remove-video:hover { color: var(--danger); }
+
+  /* ── Live media panel ── */
+  .set-live-panel { background: #0e0e12; border-bottom: 1px solid var(--line); padding: 0.65rem 1.25rem 0.85rem; }
+  .live-label { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.4rem; }
+  .tile-row { display: flex; gap: 0.45rem; flex-wrap: wrap; margin-bottom: 0.65rem; }
+  .tile-row:last-child { margin-bottom: 0; }
+  .media-tile { position: relative; cursor: pointer; border-radius: 2px; overflow: hidden; border: 2px solid var(--line); transition: border-color 0.15s; flex-shrink: 0; }
+  .media-tile:hover { border-color: rgba(244,241,234,0.45); }
+  .media-tile--active { border-color: #4caf82 !important; }
+  .media-tile--video { width: 96px; height: 54px; background: #1a1a20 center/cover no-repeat; }
+  .media-tile--image { width: 60px; height: 60px; background: #111 center/contain no-repeat; }
+  .tile-num { position: absolute; bottom: 2px; left: 3px; font-family: ui-monospace, monospace; font-size: 0.58rem; color: rgba(255,255,255,0.65); text-shadow: 0 1px 3px rgba(0,0,0,0.9); pointer-events: none; line-height: 1; }
+  .tile-active-pip { position: absolute; bottom: 3px; right: 3px; width: 7px; height: 7px; background: #4caf82; border-radius: 50%; box-shadow: 0 0 5px #4caf82; pointer-events: none; }
+  .set-row--live { border-bottom: none; } /* live panel provides the separator */
 
   [hidden] { display: none !important; }
 </style>
@@ -115,19 +140,14 @@
       <div class="hint">Single videos, playlists and livestreams all work. Each entry plays when the previous one ends.</div>
     </div>
     <div class="field">
-      <label for="f-image">Overlay image (PNG with transparency recommended)</label>
-      <input type="file" id="f-image" accept="image/*">
-      <div id="f-preview" class="img-preview"></div>
+      <label>Overlay images (cycled in order – PNG with transparency recommended)</label>
+      <div class="image-list" id="f-images"></div>
+      <button type="button" class="btn btn-ghost btn-sm" id="add-image-btn">+ Add image</button>
+      <div class="hint">Each image has its own "on screen" duration. Images cycle one per appearance.</div>
     </div>
-    <div class="row">
-      <div class="field">
-        <label for="f-interval">Show every (seconds)</label>
-        <input type="number" id="f-interval" value="60" min="1" step="1">
-      </div>
-      <div class="field">
-        <label for="f-duration">Stay on for (seconds)</label>
-        <input type="number" id="f-duration" value="5" min="1" step="1">
-      </div>
+    <div class="field">
+      <label for="f-interval">Show every (seconds)</label>
+      <input type="number" id="f-interval" value="60" min="1" step="1">
     </div>
     <div class="row">
       <div class="field">
@@ -190,25 +210,41 @@
 </div>
 <script>
 // ── Storage ──
-// sets: [{ id, name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }]
+// sets: [{ id, name, videos, images:[{imageDataUrl,duration}], interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed }]
 
 function loadSets() {
   try {
     const raw = JSON.parse(localStorage.getItem('projector_sets') || '[]');
-    // Migrate sets saved before multi-video support (had a single `url` field)
-    return raw.map(s => (!s.videos && s.url) ? { ...s, videos: [s.url] } : s);
+    return raw.map(s => {
+      // Migrate single url → videos array
+      if (!s.videos && s.url) s = { ...s, videos: [s.url] };
+      // Migrate single imageDataUrl + duration → images array
+      if (!s.images && s.imageDataUrl) s = { ...s, images: [{ imageDataUrl: s.imageDataUrl, duration: s.duration ?? 5 }] };
+      return s;
+    });
   } catch { return []; }
 }
-function saveSets(sets) { localStorage.setItem('projector_sets', JSON.stringify(sets)); }
+function saveSets(sets) {
+  try {
+    localStorage.setItem('projector_sets', JSON.stringify(sets));
+  } catch (e) {
+    if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+      alert('Browser storage is full. Try deleting unused sets or using smaller images.');
+    }
+  }
+}
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+function numOr(val, fallback) { const n = parseFloat(val); return Number.isFinite(n) ? n : fallback; }
 
 // ── State ──
 let sets = loadSets();
-let editingId = null;           // null = new set, string = editing existing
-let pendingImageDataUrl = null; // image selected in the current form session
-let formVideos = [''];          // video URLs being edited in the current form session
-let playerWin = null;           // reference to the open output window
-let activeSetId = null;         // id of the set currently in the player
+let editingId  = null; // null = new set, string = editing existing
+let formVideos = ['']; // video URLs being edited in the current form session
+let formImages = [{ imageDataUrl: null, duration: 5 }]; // images being edited in the current form session
+let playerWin    = null;   // reference to the open output window
+let activeSetId  = null;   // id of the set currently in the player
+let activePoll   = null;   // module-level poll handle (prevents duplicate intervals)
+let lastStateJson = null;  // last-seen projector_state string for change detection
 
 // ── Render list ──
 function renderList() {
@@ -219,12 +255,14 @@ function renderList() {
     return;
   }
 
-  // { id, name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality }
-  const windowOpen = playerWin && !playerWin.closed;
+  const windowOpen  = playerWin && !playerWin.closed;
+  const liveState   = JSON.parse(localStorage.getItem('projector_state') || 'null');
 
   list.innerHTML = sets.map(s => {
     const isLive    = windowOpen && s.id === activeSetId;
+    const thumbUrl  = s.images?.[0]?.imageDataUrl || '';
     const videoDesc = s.videos?.length === 1 ? esc(shortUrl(s.videos[0])) : `${s.videos?.length ?? 0} videos`;
+    const imgDesc   = s.images?.length === 1 ? '1 image' : `${s.images?.length ?? 0} images`;
     const launchBtn = isLive
       ? `<button class="btn btn-live btn-sm" disabled>● Live</button>`
       : windowOpen
@@ -232,17 +270,23 @@ function renderList() {
         : `<button class="btn btn-launch btn-sm" onclick="launchSet('${s.id}')">Launch →</button>`;
     return `
     <div class="set-row${isLive ? ' set-row--live' : ''}">
-      <div class="set-thumb" style="background-image:url(${s.imageDataUrl || ''})"></div>
+      <div class="set-thumb" style="background-image:url(${thumbUrl})"></div>
       <div class="set-meta">
         <div class="set-name">${esc(s.name)}</div>
-        <div class="set-detail">${videoDesc} &nbsp;·&nbsp; every ${s.interval}s / on for ${s.duration}s &nbsp;·&nbsp; fade ${s.fadeIn ?? 0.35}s↑ ${s.fadeOut ?? 0.35}s↓ &nbsp;·&nbsp; ${qualityLabel(s.quality)}</div>
+        <div class="set-detail">
+          <div class="set-detail-row">${videoDesc} &nbsp;·&nbsp; ${imgDesc} &nbsp;·&nbsp; every ${s.interval}s</div>
+          <div class="set-detail-row">fade ${s.fadeIn ?? 0.35}s↑ ${s.fadeOut ?? 0.35}s↓ &nbsp;·&nbsp; ${qualityLabel(s.quality)}${s.bounce ? ' &nbsp;·&nbsp; bounce' : ''}</div>
+        </div>
       </div>
       <div class="set-actions">
+        <button class="btn btn-ghost btn-sm" onclick="moveSet('${s.id}',-1)" ${sets.indexOf(s) === 0 ? 'disabled' : ''} title="Move up">↑</button>
+        <button class="btn btn-ghost btn-sm" onclick="moveSet('${s.id}', 1)" ${sets.indexOf(s) === sets.length - 1 ? 'disabled' : ''} title="Move down">↓</button>
         <button class="btn btn-ghost  btn-sm" onclick="editSet('${s.id}')">Edit</button>
         <button class="btn btn-danger btn-sm" onclick="deleteSet('${s.id}')">Delete</button>
         ${launchBtn}
       </div>
-    </div>`;
+    </div>
+    ${isLive ? renderLivePanel(s, liveState) : ''}`;
   }).join('');
 }
 
@@ -263,28 +307,79 @@ function shortUrl(url) {
   } catch { return url.slice(0, 42); }
 }
 
+// Returns a YouTube thumbnail URL if the video ID can be parsed, otherwise null.
+function ytThumbUrl(url) {
+  try {
+    const u    = new URL(url.trim());
+    const host = u.hostname.replace(/^www\./, '');
+    let vid    = null;
+    if (host === 'youtu.be') {
+      vid = u.pathname.slice(1) || null;
+    } else if (host.endsWith('youtube.com')) {
+      if      (u.pathname === '/watch')              vid = u.searchParams.get('v');
+      else if (u.pathname.startsWith('/embed/'))     vid = u.pathname.split('/')[2] || null;
+      else if (u.pathname.startsWith('/live/'))      vid = u.pathname.split('/')[2] || null;
+      else if (u.pathname.startsWith('/shorts/'))    vid = u.pathname.split('/')[2] || null;
+    }
+    return vid ? `https://img.youtube.com/vi/${vid}/mqdefault.jpg` : null;
+  } catch { return null; }
+}
+
+// Builds the expandable tile panel shown below a live set row.
+// state: { videoIndex, imageIndex } from projector_state, or null.
+function renderLivePanel(set, state) {
+  const videoIdx = state?.videoIndex ?? 0;
+  const imageIdx = state?.imageIndex ?? 0;
+
+  const videoTiles = (set.videos || []).map((url, i) => {
+    const thumb  = ytThumbUrl(url);
+    const active = i === videoIdx;
+    const bg     = thumb ? `background-image:url(${thumb})` : '';
+    return `<div class="media-tile media-tile--video${active ? ' media-tile--active' : ''}"
+        style="${bg}" onclick="seekMedia('video',${i})" title="${esc(url)}">
+        <span class="tile-num">${i + 1}</span>
+        ${active ? '<div class="tile-active-pip"></div>' : ''}
+      </div>`;
+  }).join('');
+
+  const imageTiles = (set.images || []).map((img, i) => {
+    const active = i === imageIdx;
+    return `<div class="media-tile media-tile--image${active ? ' media-tile--active' : ''}"
+        style="background-image:url(${img.imageDataUrl || ''})"
+        onclick="seekMedia('image',${i})" title="Image ${i + 1} · ${img.duration}s">
+        <span class="tile-num">${i + 1}</span>
+        ${active ? '<div class="tile-active-pip"></div>' : ''}
+      </div>`;
+  }).join('');
+
+  return `<div class="set-live-panel">
+    <p class="live-label">Videos</p>
+    <div class="tile-row">${videoTiles}</div>
+    <p class="live-label">Images</p>
+    <div class="tile-row">${imageTiles}</div>
+  </div>`;
+}
+
 // ── Form open / close ──
 function openForm(set = null) {
-  editingId         = set ? set.id : null;
-  pendingImageDataUrl = null;
+  editingId = set ? set.id : null;
 
-  document.getElementById('form-title').textContent   = set ? 'Edit set' : 'New set';
-  document.getElementById('f-name').value             = set?.name     ?? '';
-  document.getElementById('f-interval').value         = set?.interval ?? 60;
-  document.getElementById('f-duration').value         = set?.duration ?? 5;
-  document.getElementById('f-fade-in').value          = set?.fadeIn   ?? 0.35;
+  document.getElementById('form-title').textContent = set ? 'Edit set' : 'New set';
+  document.getElementById('f-name').value           = set?.name     ?? '';
+  document.getElementById('f-interval').value       = set?.interval ?? 60;
+  document.getElementById('f-fade-in').value        = set?.fadeIn   ?? 0.35;
   document.getElementById('f-fade-out').value         = set?.fadeOut  ?? 0.35;
-  document.getElementById('f-easing').value           = set?.easing      ?? 'ease';
-  document.getElementById('f-quality').value          = set?.quality     ?? 'default';
-  document.getElementById('f-bounce').checked         = set?.bounce      ?? false;
-  document.getElementById('f-bounce-size').value      = set?.bounceSize  ?? 200;
-  document.getElementById('f-bounce-speed').value     = set?.bounceSpeed ?? 150;
-  document.getElementById('f-image').value            = '';
-  document.getElementById('f-preview').style.backgroundImage = set?.imageDataUrl ? `url(${set.imageDataUrl})` : '';
-  document.getElementById('form-error').textContent   = '';
+  document.getElementById('f-easing').value      = set?.easing      ?? 'ease';
+  document.getElementById('f-quality').value     = set?.quality     ?? 'default';
+  document.getElementById('f-bounce').checked    = set?.bounce      ?? false;
+  document.getElementById('f-bounce-size').value = set?.bounceSize  ?? 200;
+  document.getElementById('f-bounce-speed').value= set?.bounceSpeed ?? 150;
+  document.getElementById('form-error').textContent = '';
   formVideos = set?.videos?.length ? [...set.videos] : [''];
-  document.getElementById('form-panel').hidden        = false;
+  formImages = set?.images?.length ? set.images.map(img => ({ ...img })) : [{ imageDataUrl: null, duration: 5 }];
+  document.getElementById('form-panel').hidden = false;
   renderVideoInputs();
+  renderImageInputs();
 
   document.getElementById('form-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   document.getElementById('f-name').focus();
@@ -292,9 +387,59 @@ function openForm(set = null) {
 
 function closeForm() {
   document.getElementById('form-panel').hidden = true;
-  editingId = null;
-  pendingImageDataUrl = null;
+  editingId  = null;
   formVideos = [''];
+  formImages = [{ imageDataUrl: null, duration: 5 }];
+}
+
+// ── Image list UI ──
+function renderImageInputs() {
+  const container = document.getElementById('f-images');
+  container.innerHTML = formImages.map((img, i) => `
+    <div class="image-item">
+      <div class="image-thumb" style="background-image:url(${img.imageDataUrl || ''})"></div>
+      <input type="file" data-idx="${i}" accept="image/*" title="Choose image">
+      <input type="number" data-idx="${i}" value="${img.duration}" min="1" step="1" title="Seconds on screen">
+      <span class="image-dur-unit">s</span>
+      ${formImages.length > 1
+        ? `<button type="button" class="remove-image" onclick="removeImage(${i})" title="Remove">×</button>`
+        : '<span style="width:1.2rem"></span>'}
+    </div>`).join('');
+
+  container.querySelectorAll('input[type="file"]').forEach(input => {
+    input.addEventListener('change', e => {
+      const idx  = parseInt(e.target.dataset.idx);
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        formImages[idx].imageDataUrl = ev.target.result;
+        // Update thumbnail in-place without re-rendering the whole list
+        e.target.closest('.image-item').querySelector('.image-thumb')
+          .style.backgroundImage = `url(${ev.target.result})`;
+      };
+      reader.onerror = () => {
+        document.getElementById('form-error').textContent = 'Failed to read image file.';
+      };
+      reader.readAsDataURL(file);
+    });
+  });
+
+  container.querySelectorAll('input[type="number"]').forEach(input => {
+    input.addEventListener('input', e => {
+      formImages[parseInt(e.target.dataset.idx)].duration = Math.max(1, parseFloat(e.target.value) || 5);
+    });
+  });
+}
+
+function addImage() {
+  formImages.push({ imageDataUrl: null, duration: 5 });
+  renderImageInputs();
+}
+
+function removeImage(i) {
+  formImages.splice(i, 1);
+  renderImageInputs();
 }
 
 // ── Video list UI ──
@@ -330,18 +475,6 @@ function removeVideo(i) {
   renderVideoInputs();
 }
 
-// ── Image picker ──
-document.getElementById('f-image').addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    pendingImageDataUrl = ev.target.result;
-    document.getElementById('f-preview').style.backgroundImage = `url(${pendingImageDataUrl})`;
-  };
-  reader.readAsDataURL(file);
-});
-
 // ── Save ──
 document.getElementById('save-btn').addEventListener('click', () => {
   const err      = document.getElementById('form-error');
@@ -349,28 +482,26 @@ document.getElementById('save-btn').addEventListener('click', () => {
 
   const name     = document.getElementById('f-name').value.trim();
   const videos   = formVideos.map(u => u.trim()).filter(Boolean);
-  const interval = Math.max(1,   parseInt(document.getElementById('f-interval').value, 10) || 60);
-  const duration = Math.max(1,   parseInt(document.getElementById('f-duration').value, 10) || 5);
-  const fadeIn   = Math.max(0,  parseFloat(document.getElementById('f-fade-in').value)  || 0.35);
-  const fadeOut  = Math.max(0,  parseFloat(document.getElementById('f-fade-out').value) || 0.35);
+  const interval = Math.max(1,  parseInt(document.getElementById('f-interval').value, 10) || 60);
+  const fadeIn   = Math.max(0, numOr(document.getElementById('f-fade-in').value,  0.35));
+  const fadeOut  = Math.max(0, numOr(document.getElementById('f-fade-out').value, 0.35));
   const easing      = document.getElementById('f-easing').value  || 'ease';
   const quality     = document.getElementById('f-quality').value || 'default';
   const bounce      = document.getElementById('f-bounce').checked;
   const bounceSize  = Math.max(50,  parseInt(document.getElementById('f-bounce-size').value,  10) || 200);
   const bounceSpeed = Math.max(10,  parseInt(document.getElementById('f-bounce-speed').value, 10) || 150);
 
+  const images = formImages.map(img => ({ imageDataUrl: img.imageDataUrl, duration: Math.max(1, img.duration || 5) }));
+
   if (!name)           { err.textContent = 'Please give this set a name.'; return; }
   if (!videos.length)  { err.textContent = 'Please enter at least one YouTube URL.'; return; }
-
-  // Keep existing image when editing and no new file was chosen
-  const existing     = editingId ? sets.find(s => s.id === editingId) : null;
-  const imageDataUrl = pendingImageDataUrl || existing?.imageDataUrl || null;
-  if (!imageDataUrl) { err.textContent = 'Please choose an overlay image.'; return; }
+  if (!images.length)  { err.textContent = 'Please add at least one overlay image.'; return; }
+  if (images.some(img => !img.imageDataUrl)) { err.textContent = 'Please choose a file for each image slot.'; return; }
 
   if (editingId) {
-    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed } : s);
+    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed } : s);
   } else {
-    sets.push({ id: uid(), name, videos, imageDataUrl, interval, duration, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed });
+    sets.push({ id: uid(), name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed });
   }
 
   saveSets(sets);
@@ -381,6 +512,17 @@ document.getElementById('save-btn').addEventListener('click', () => {
 document.getElementById('cancel-btn').addEventListener('click', closeForm);
 document.getElementById('new-btn').addEventListener('click', () => openForm());
 document.getElementById('add-video-btn').addEventListener('click', addVideo);
+document.getElementById('add-image-btn').addEventListener('click', addImage);
+
+// ── Reorder ──
+function moveSet(id, direction) {
+  const i = sets.findIndex(s => s.id === id);
+  const j = i + direction;
+  if (j < 0 || j >= sets.length) return;
+  [sets[i], sets[j]] = [sets[j], sets[i]];
+  saveSets(sets);
+  renderList();
+}
 
 // ── Edit / Delete / Launch (called from inline onclick) ──
 function editSet(id) {
@@ -401,20 +543,30 @@ function launchSet(id) {
   const set = sets.find(s => s.id === id);
   if (!set) return;
 
-  activeSetId = id;
+  activeSetId   = id;
+  lastStateJson = null;
+
+  // Clear stale state from the previous set so tiles don't flash wrong highlights
+  localStorage.removeItem('projector_state');
+  localStorage.removeItem('projector_command');
 
   // Write active config so player.html reads it fresh on load
-  localStorage.setItem('projector_active', JSON.stringify({
-    videos: set.videos, imageDataUrl: set.imageDataUrl,
-    interval: set.interval, duration: set.duration,
-    fadeIn:  set.fadeIn  ?? 0.35,
-    fadeOut: set.fadeOut ?? 0.35,
-    easing:      set.easing      ?? 'ease',
-    quality:     set.quality     ?? 'default',
-    bounce:      set.bounce      ?? false,
-    bounceSize:  set.bounceSize  ?? 200,
-    bounceSpeed: set.bounceSpeed ?? 150,
-  }));
+  try {
+    localStorage.setItem('projector_active', JSON.stringify({
+      videos: set.videos, images: set.images,
+      interval: set.interval,
+      fadeIn:  set.fadeIn  ?? 0.35,
+      fadeOut: set.fadeOut ?? 0.35,
+      easing:      set.easing      ?? 'ease',
+      quality:     set.quality     ?? 'default',
+      bounce:      set.bounce      ?? false,
+      bounceSize:  set.bounceSize  ?? 200,
+      bounceSpeed: set.bounceSpeed ?? 150,
+    }));
+  } catch (e) {
+    alert('Failed to write set config to browser storage – images may be too large. Free up storage and try again.');
+    return;
+  }
 
   if (playerWin && !playerWin.closed) {
     // Window already open – navigate it to reload with the new config
@@ -424,17 +576,37 @@ function launchSet(id) {
     playerWin = window.open('player.html', 'projector-output');
   }
 
-  // Poll until the window reports closed so button state stays accurate
-  const poll = setInterval(() => {
+  // One module-level poll: detects window closure AND player state changes.
+  // Cancelling any prior poll prevents duplicate intervals on set switches.
+  if (activePoll) clearInterval(activePoll);
+  activePoll = setInterval(() => {
     if (playerWin && playerWin.closed) {
-      playerWin = null;
-      activeSetId = null;
-      clearInterval(poll);
+      playerWin    = null;
+      activeSetId  = null;
+      lastStateJson = null;
+      clearInterval(activePoll);
+      activePoll = null;
+      renderList();
+      return;
+    }
+    // Re-render whenever the player reports a new video or image index
+    const stateJson = localStorage.getItem('projector_state');
+    if (stateJson !== lastStateJson) {
+      lastStateJson = stateJson;
       renderList();
     }
   }, 1000);
 
   renderList();
+}
+
+// ── Seek command (called from tile onclick) ──
+// Writes a command to localStorage; player.html listens via the storage event.
+function seekMedia(type, index) {
+  if (!playerWin || playerWin.closed) return;
+  const label = type === 'video' ? `Video ${index + 1}` : `Image ${index + 1}`;
+  if (!confirm(`This set is currently live.\n\nSwitch to ${label}?`)) return;
+  localStorage.setItem('projector_command', JSON.stringify({ type: `seek-${type}`, index }));
 }
 
 // ── Init ──
