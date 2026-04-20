@@ -51,10 +51,37 @@
   .set-detail-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.7; }
   .set-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
 
-  /* ── Form panel ── */
-  #form-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 2rem 2.25rem; margin-top: 2rem; }
+  /* ── Slideover panel ── */
+  #form-panel {
+    position: fixed; top: 0; right: 0;
+    width: 66.667vw; min-width: 480px; height: 100vh;
+    overflow-y: auto;
+    background: var(--panel); border-left: 1px solid var(--line);
+    padding: 2.5rem 2.5rem 6rem;
+    z-index: 100;
+    transform: translateX(110%); visibility: hidden;
+    transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.35s;
+  }
+  #form-panel.is-open {
+    transform: translateX(0); visibility: visible;
+    transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0s;
+  }
   #form-panel h3 { font-weight: 400; font-style: italic; font-size: 1.5rem; margin: 0 0 1.5rem; }
-  .field { display: block; margin-bottom: 1.25rem; }
+
+  /* ── Slideover backdrop ── */
+  .slideover-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 99; opacity: 0; visibility: hidden; transition: opacity 0.35s ease, visibility 0s linear 0.35s; cursor: pointer; }
+  .slideover-backdrop.is-open { opacity: 1; visibility: visible; transition: opacity 0.35s ease, visibility 0s linear 0s; }
+
+  /* ── Discard-changes modal ── */
+  /* Uses .is-open class – not the hidden attribute – so display:flex is never blocked by [hidden] */
+  #discard-modal { display: none; position: fixed; inset: 0; z-index: 9999; align-items: center; justify-content: center; }
+  #discard-modal.is-open { display: flex; }
+  .discard-modal-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); }
+  .discard-modal-box { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 2rem 2.25rem; max-width: 360px; width: 90%; box-shadow: 0 24px 64px rgba(0,0,0,0.7); }
+  .discard-modal-title { font-weight: 500; font-size: 1.05rem; margin: 0 0 0.4rem; }
+  .discard-modal-body { color: var(--muted); font-size: 0.875rem; font-family: ui-monospace, monospace; margin: 0 0 1.5rem; line-height: 1.6; }
+  .discard-modal-actions { display: flex; flex-direction: column; gap: 0.5rem; }
+  .field { display: block; margin-bottom: 1.5rem; }
   .field label { display: block; font-family: ui-monospace, monospace; font-size: 0.7rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.4rem; }
   .field input[type="text"],
   .field input[type="number"],
@@ -85,6 +112,26 @@
   .field-inline input[type="checkbox"] { width: auto; accent-color: var(--accent); width: 1rem; height: 1rem; cursor: pointer; }
   .bounce-opts { margin-top: 0.75rem; }
 
+  /* ── Form groups – card-style containers within the form panel ── */
+  .form-group { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
+  .form-group > .field:last-child,
+  .form-group > .row:last-child { margin-bottom: 0; }
+  .form-group-header { display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1.25rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--line); }
+  .form-group-title { font-family: ui-monospace, monospace; font-size: 0.72rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink); font-weight: 500; margin: 0; }
+  .form-group-desc { font-family: ui-monospace, monospace; font-size: 0.68rem; color: var(--muted); margin: 0; }
+  .form-group .hint { margin-top: 0.6rem; }
+  /* Name field sits outside cards as the primary identity field */
+  .form-name-field { margin-bottom: 1.5rem; }
+  .form-name-field input { font-family: ui-serif, Georgia, serif !important; font-size: 1.2rem !important; }
+  .field-half { max-width: calc(50% - 0.625rem); }
+
+  /* ── List column headers ── */
+  .list-cols { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.4rem; }
+  .list-cols span { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
+  .list-cols--video span:first-child { width: 1.2rem; flex-shrink: 0; }
+  .list-cols--image span:first-child { width: 60px; flex-shrink: 0; }
+  .list-cols--image span:nth-child(3) { width: 52px; text-align: center; flex-shrink: 0; }
+
   /* ── Video list ── */
   .video-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.6rem; }
   .video-item { display: flex; align-items: center; gap: 0.6rem; }
@@ -107,15 +154,48 @@
   .tile-active-pip { position: absolute; bottom: 3px; right: 3px; width: 7px; height: 7px; background: #4caf82; border-radius: 50%; box-shadow: 0 0 5px #4caf82; pointer-events: none; }
   .set-row--live { border-bottom: none; } /* live panel provides the separator */
 
+  /* ── Live panel overlay controls ── */
+  .live-controls { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+  .btn-paused { background: transparent; color: #f59e0b; border: 1px solid #f59e0b; }
+  .btn-paused:hover { opacity: 0.8; }
+  .paused-indicator { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #f59e0b; }
+
   [hidden] { display: none !important; }
+
+  /* ── Resolution indicator ── */
+  .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1.5rem; margin-bottom: 2.5rem; }
+  .page-header > div:first-child { flex: 1; min-width: 0; }
+  .page-header .sub { margin-bottom: 0; }
+
+  #res-badge {
+    flex-shrink: 0; margin-top: 0.15rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 2px;
+    padding: 0.55rem 0.8rem;
+    font-family: ui-monospace, monospace; font-size: 0.68rem; letter-spacing: 0.05em;
+    color: var(--muted); white-space: nowrap;
+  }
+  #res-badge strong { color: var(--ink); font-weight: 500; }
+  #res-badge input[type="text"] {
+    background: transparent; border: none; border-bottom: 1px solid var(--line);
+    color: var(--ink); font-family: ui-monospace, monospace; font-size: 0.68rem;
+    width: 9ch; padding: 0; text-align: center; outline: none;
+  }
+  #res-badge input[type="text"]:focus { border-bottom-color: var(--accent); }
 </style>
 </head>
 <body>
 <div class="page">
 
-  <p class="eyebrow">Projector · Overlay · Manager</p>
-  <h1>Your <span class="accent">sets</span>.</h1>
-  <p class="sub">Save multiple projection setups. Click <em>Launch</em> to open the output in a new window – then move it to the projector and hit F11.</p>
+  <div class="page-header">
+    <div>
+      <p class="eyebrow">Projector · Overlay · Manager</p>
+      <h1>Your <span class="accent">sets</span>.</h1>
+      <p class="sub">Save multiple projection setups. Click <em>Launch</em> to open the output in a new window – then move it to the projector and hit F11.</p>
+    </div>
+    <div id="res-badge">
+      <!-- Populated by JS – shows detected resolution from player, or manual override -->
+    </div>
+  </div>
 
   <!-- ── Set list ── -->
   <div class="topbar">
@@ -126,80 +206,109 @@
     <p class="set-empty" id="empty-state">No sets yet – click "New set" to get started.</p>
   </div>
 
-  <!-- ── Edit / create form ── -->
-  <div id="form-panel" hidden>
+  <!-- ── Edit / create form (slideover) ── -->
+  <div id="form-panel">
     <h3 id="form-title">New set</h3>
-    <div class="field">
+
+    <!-- Set name – primary identity, sits outside any card -->
+    <div class="field form-name-field">
       <label for="f-name">Set name</label>
       <input type="text" id="f-name" placeholder="e.g. Sunday Service">
     </div>
-    <div class="field">
-      <label>Videos (played in order)</label>
+
+    <!-- ── Videos card ── -->
+    <div class="form-group">
+      <div class="form-group-header">
+        <p class="form-group-title">Videos</p>
+        <p class="form-group-desc">Played in order · each entry starts when the previous ends</p>
+      </div>
+      <div class="list-cols list-cols--video">
+        <span></span>
+        <span>YouTube URL</span>
+      </div>
       <div class="video-list" id="f-videos"></div>
       <button type="button" class="btn btn-ghost btn-sm" id="add-video-btn">+ Add video</button>
-      <div class="hint">Single videos, playlists and livestreams all work. Each entry plays when the previous one ends.</div>
+      <div class="hint" style="margin-bottom: 1.5rem;">Single videos, playlists and livestreams all work.</div>
+      <div class="row">
+        <div class="field">
+          <label for="f-video-timeout">Max video duration (seconds)</label>
+          <input type="number" id="f-video-timeout" min="1" step="1" placeholder="No limit">
+          <div class="hint">Fades to next video early. Leave blank for no limit.</div>
+        </div>
+        <div class="field">
+          <label for="f-quality">Video quality</label>
+          <select id="f-quality">
+            <option value="default">Auto</option>
+            <option value="small">240p</option>
+            <option value="medium">360p</option>
+            <option value="large">480p</option>
+            <option value="hd720">720p</option>
+            <option value="hd1080">1080p</option>
+            <option value="hd1440">1440p</option>
+            <option value="hd2160">2160p (4K)</option>
+          </select>
+        </div>
+      </div>
     </div>
-    <div class="field">
-      <label>Overlay images (cycled in order – PNG with transparency recommended)</label>
+
+    <!-- ── Overlay images card ── -->
+    <div class="form-group">
+      <div class="form-group-header">
+        <p class="form-group-title">Overlay images</p>
+        <p class="form-group-desc">Cycled in order · PNG with transparency recommended</p>
+      </div>
+      <div class="list-cols list-cols--image">
+        <span></span>
+        <span>Image file</span>
+        <span>Duration</span>
+      </div>
       <div class="image-list" id="f-images"></div>
       <button type="button" class="btn btn-ghost btn-sm" id="add-image-btn">+ Add image</button>
-      <div class="hint">Each image has its own "on screen" duration. Images cycle one per appearance.</div>
-    </div>
-    <div class="field">
-      <label for="f-interval">Show every (seconds)</label>
-      <input type="number" id="f-interval" value="60" min="1" step="1">
-    </div>
-    <div class="row">
-      <div class="field">
-        <label for="f-fade-in">Fade in (seconds)</label>
-        <input type="number" id="f-fade-in" value="0.35" min="0" step="0.05">
-      </div>
-      <div class="field">
-        <label for="f-fade-out">Fade out (seconds)</label>
-        <input type="number" id="f-fade-out" value="0.35" min="0" step="0.05">
-      </div>
-    </div>
-    <div class="row">
-      <div class="field">
-        <label for="f-easing">Easing curve</label>
-        <select id="f-easing">
-          <option value="ease">Ease (default)</option>
-          <option value="linear">Linear</option>
-          <option value="ease-in">Ease in</option>
-          <option value="ease-out">Ease out</option>
-          <option value="ease-in-out">Ease in–out</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="f-quality">Video quality</label>
-        <select id="f-quality">
-          <option value="default">Auto</option>
-          <option value="small">240p</option>
-          <option value="medium">360p</option>
-          <option value="large">480p</option>
-          <option value="hd720">720p</option>
-          <option value="hd1080">1080p</option>
-          <option value="hd1440">1440p</option>
-          <option value="hd2160">2160p (4K)</option>
-        </select>
-      </div>
-    </div>
-    <div class="field">
-      <label class="field-inline">
-        <input type="checkbox" id="f-bounce">
-        Bouncing mode – image moves around the screen like a DVD screensaver
-      </label>
-      <div class="row bounce-opts">
+      <div class="hint" style="margin-bottom: 1.5rem;">Each image has its own "on screen" duration. Images cycle one per appearance.</div>
+      <div class="row">
         <div class="field">
-          <label for="f-bounce-size">Image size (px)</label>
-          <input type="number" id="f-bounce-size" value="200" min="50" step="10">
+          <label for="f-interval">Show every (seconds)</label>
+          <input type="number" id="f-interval" value="60" min="1" step="1">
         </div>
         <div class="field">
-          <label for="f-bounce-speed">Speed (px / second)</label>
-          <input type="number" id="f-bounce-speed" value="150" min="10" max="600" step="10">
+          <label for="f-fade-in">Fade in (seconds)</label>
+          <input type="number" id="f-fade-in" value="0.35" min="0" step="0.05">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="f-fade-out">Fade out (seconds)</label>
+          <input type="number" id="f-fade-out" value="0.35" min="0" step="0.05">
+        </div>
+        <div class="field">
+          <label for="f-easing">Easing curve</label>
+          <select id="f-easing">
+            <option value="ease">Ease (default)</option>
+            <option value="linear">Linear</option>
+            <option value="ease-in">Ease in</option>
+            <option value="ease-out">Ease out</option>
+            <option value="ease-in-out">Ease in–out</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-inline">
+          <input type="checkbox" id="f-bounce">
+          Bouncing mode – image moves around the screen like a DVD screensaver
+        </label>
+        <div class="row bounce-opts" id="bounce-opts" hidden>
+          <div class="field">
+            <label for="f-bounce-size">Image size (px)</label>
+            <input type="number" id="f-bounce-size" value="200" min="50" step="10">
+          </div>
+          <div class="field">
+            <label for="f-bounce-speed">Speed (px / second)</label>
+            <input type="number" id="f-bounce-speed" value="150" min="10" max="600" step="10">
+          </div>
         </div>
       </div>
     </div>
+
     <div class="form-actions">
       <button class="btn btn-primary" id="save-btn">Save set</button>
       <button class="btn btn-ghost"   id="cancel-btn">Cancel</button>
@@ -208,6 +317,24 @@
   </div>
 
 </div>
+
+<!-- ── Slideover backdrop (click to close) ── -->
+<div class="slideover-backdrop" id="slideover-backdrop"></div>
+
+<!-- ── Discard-changes modal ── -->
+<div id="discard-modal">
+  <div class="discard-modal-overlay"></div>
+  <div class="discard-modal-box">
+    <p class="discard-modal-title">Unsaved changes</p>
+    <p class="discard-modal-body">You have unsaved changes. What would you like to do?</p>
+    <div class="discard-modal-actions">
+      <button class="btn btn-primary" id="discard-save">Save changes</button>
+      <button class="btn btn-danger"  id="discard-discard">Discard changes</button>
+      <button class="btn btn-ghost"   id="discard-cancel">Keep editing</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Storage ──
 // sets: [{ id, name, videos, images:[{imageDataUrl,duration}], interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed }]
@@ -238,9 +365,10 @@ function numOr(val, fallback) { const n = parseFloat(val); return Number.isFinit
 
 // ── State ──
 let sets = loadSets();
-let editingId  = null; // null = new set, string = editing existing
-let formVideos = ['']; // video URLs being edited in the current form session
+let editingId  = null;  // null = new set, string = editing existing
+let formVideos = [''];  // video URLs being edited in the current form session
 let formImages = [{ imageDataUrl: null, duration: 5 }]; // images being edited in the current form session
+let formDirty  = false; // true once the user has changed anything in the open form
 let playerWin    = null;   // reference to the open output window
 let activeSetId  = null;   // id of the set currently in the player
 let activePoll   = null;   // module-level poll handle (prevents duplicate intervals)
@@ -275,7 +403,7 @@ function renderList() {
         <div class="set-name">${esc(s.name)}</div>
         <div class="set-detail">
           <div class="set-detail-row">${videoDesc} &nbsp;·&nbsp; ${imgDesc} &nbsp;·&nbsp; every ${s.interval}s</div>
-          <div class="set-detail-row">fade ${s.fadeIn ?? 0.35}s↑ ${s.fadeOut ?? 0.35}s↓ &nbsp;·&nbsp; ${qualityLabel(s.quality)}${s.bounce ? ' &nbsp;·&nbsp; bounce' : ''}</div>
+          <div class="set-detail-row">fade ${s.fadeIn ?? 0.35}s↑ ${s.fadeOut ?? 0.35}s↓ &nbsp;·&nbsp; ${qualityLabel(s.quality)}${s.bounce ? ' &nbsp;·&nbsp; bounce' : ''}${s.videoTimeout ? ` &nbsp;·&nbsp; max ${s.videoTimeout}s/video` : ''}</div>
         </div>
       </div>
       <div class="set-actions">
@@ -330,6 +458,7 @@ function ytThumbUrl(url) {
 function renderLivePanel(set, state) {
   const videoIdx = state?.videoIndex ?? 0;
   const imageIdx = state?.imageIndex ?? 0;
+  const isPaused = state?.overlayPaused ?? false;
 
   const videoTiles = (set.videos || []).map((url, i) => {
     const thumb  = ytThumbUrl(url);
@@ -352,7 +481,13 @@ function renderLivePanel(set, state) {
       </div>`;
   }).join('');
 
+  const pauseControl = isPaused
+    ? `<button class="btn btn-paused btn-sm" onclick="toggleOverlay()">▶ Resume images</button>
+       <span class="paused-indicator">● images paused</span>`
+    : `<button class="btn btn-ghost btn-sm" onclick="toggleOverlay()">⏸ Pause images</button>`;
+
   return `<div class="set-live-panel">
+    <div class="live-controls">${pauseControl}</div>
     <p class="live-label">Videos</p>
     <div class="tile-row">${videoTiles}</div>
     <p class="live-label">Images</p>
@@ -371,25 +506,37 @@ function openForm(set = null) {
   document.getElementById('f-fade-out').value         = set?.fadeOut  ?? 0.35;
   document.getElementById('f-easing').value      = set?.easing      ?? 'ease';
   document.getElementById('f-quality').value     = set?.quality     ?? 'default';
-  document.getElementById('f-bounce').checked    = set?.bounce      ?? false;
-  document.getElementById('f-bounce-size').value = set?.bounceSize  ?? 200;
-  document.getElementById('f-bounce-speed').value= set?.bounceSpeed ?? 150;
+  document.getElementById('f-bounce').checked      = set?.bounce       ?? false;
+  document.getElementById('f-bounce-size').value   = set?.bounceSize   ?? 200;
+  document.getElementById('f-bounce-speed').value  = set?.bounceSpeed  ?? 150;
+  document.getElementById('bounce-opts').hidden    = !(set?.bounce ?? false);
+  document.getElementById('f-video-timeout').value = set?.videoTimeout ?? '';
   document.getElementById('form-error').textContent = '';
   formVideos = set?.videos?.length ? [...set.videos] : [''];
   formImages = set?.images?.length ? set.images.map(img => ({ ...img })) : [{ imageDataUrl: null, duration: 5 }];
-  document.getElementById('form-panel').hidden = false;
   renderVideoInputs();
   renderImageInputs();
+  formDirty = false;
 
-  document.getElementById('form-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  document.getElementById('form-panel').classList.add('is-open');
+  document.getElementById('slideover-backdrop').classList.add('is-open');
   document.getElementById('f-name').focus();
 }
 
 function closeForm() {
-  document.getElementById('form-panel').hidden = true;
+  document.getElementById('form-panel').classList.remove('is-open');
+  document.getElementById('slideover-backdrop').classList.remove('is-open');
   editingId  = null;
   formVideos = [''];
   formImages = [{ imageDataUrl: null, duration: 5 }];
+  formDirty  = false;
+}
+
+function showDiscardModal() { document.getElementById('discard-modal').classList.add('is-open'); }
+function hideDiscardModal() { document.getElementById('discard-modal').classList.remove('is-open'); }
+
+function maybeClose() {
+  if (formDirty) { showDiscardModal(); } else { closeForm(); }
 }
 
 // ── Image list UI ──
@@ -490,6 +637,8 @@ document.getElementById('save-btn').addEventListener('click', () => {
   const bounce      = document.getElementById('f-bounce').checked;
   const bounceSize  = Math.max(50,  parseInt(document.getElementById('f-bounce-size').value,  10) || 200);
   const bounceSpeed = Math.max(10,  parseInt(document.getElementById('f-bounce-speed').value, 10) || 150);
+  const videoTimeoutRaw = parseInt(document.getElementById('f-video-timeout').value, 10);
+  const videoTimeout    = Number.isFinite(videoTimeoutRaw) && videoTimeoutRaw > 0 ? videoTimeoutRaw : 0;
 
   const images = formImages.map(img => ({ imageDataUrl: img.imageDataUrl, duration: Math.max(1, img.duration || 5) }));
 
@@ -499,9 +648,9 @@ document.getElementById('save-btn').addEventListener('click', () => {
   if (images.some(img => !img.imageDataUrl)) { err.textContent = 'Please choose a file for each image slot.'; return; }
 
   if (editingId) {
-    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed } : s);
+    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout } : s);
   } else {
-    sets.push({ id: uid(), name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed });
+    sets.push({ id: uid(), name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout });
   }
 
   saveSets(sets);
@@ -509,10 +658,39 @@ document.getElementById('save-btn').addEventListener('click', () => {
   closeForm();
 });
 
-document.getElementById('cancel-btn').addEventListener('click', closeForm);
+document.getElementById('cancel-btn').addEventListener('click', maybeClose);
 document.getElementById('new-btn').addEventListener('click', () => openForm());
 document.getElementById('add-video-btn').addEventListener('click', addVideo);
 document.getElementById('add-image-btn').addEventListener('click', addImage);
+document.getElementById('f-bounce').addEventListener('change', (e) => {
+  document.getElementById('bounce-opts').hidden = !e.target.checked;
+});
+
+// Mark form dirty on any user input inside the panel
+document.getElementById('form-panel').addEventListener('input',  () => { formDirty = true; });
+document.getElementById('form-panel').addEventListener('change', () => { formDirty = true; });
+
+// Backdrop click → check for unsaved changes
+document.getElementById('slideover-backdrop').addEventListener('click', maybeClose);
+
+// Escape key – close or dismiss the modal if it's open
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!document.getElementById('discard-modal').hidden) { hideDiscardModal(); return; }
+  if (document.getElementById('form-panel').classList.contains('is-open')) maybeClose();
+});
+
+// Discard modal buttons
+document.getElementById('discard-save').addEventListener('click', () => {
+  hideDiscardModal();
+  document.getElementById('save-btn').click();
+});
+document.getElementById('discard-discard').addEventListener('click', () => {
+  hideDiscardModal();
+  formDirty = false; // skip the check in closeForm
+  closeForm();
+});
+document.getElementById('discard-cancel').addEventListener('click', hideDiscardModal);
 
 // ── Reorder ──
 function moveSet(id, direction) {
@@ -561,7 +739,8 @@ function launchSet(id) {
       quality:     set.quality     ?? 'default',
       bounce:      set.bounce      ?? false,
       bounceSize:  set.bounceSize  ?? 200,
-      bounceSpeed: set.bounceSpeed ?? 150,
+      bounceSpeed:   set.bounceSpeed  ?? 150,
+      videoTimeout:  set.videoTimeout ?? 0,
     }));
   } catch (e) {
     alert('Failed to write set config to browser storage – images may be too large. Free up storage and try again.');
@@ -606,8 +785,57 @@ function seekMedia(type, index) {
   if (!playerWin || playerWin.closed) return;
   const label = type === 'video' ? `Video ${index + 1}` : `Image ${index + 1}`;
   if (!confirm(`This set is currently live.\n\nSwitch to ${label}?`)) return;
+  // Remove first so the storage event always fires, even if the same index is re-selected
+  localStorage.removeItem('projector_command');
   localStorage.setItem('projector_command', JSON.stringify({ type: `seek-${type}`, index }));
 }
+
+// ── Overlay pause / resume (called from live panel button) ──
+// Reads current paused state from projector_state and sends the inverse command.
+function toggleOverlay() {
+  if (!playerWin || playerWin.closed) return;
+  const state    = JSON.parse(localStorage.getItem('projector_state') || 'null');
+  const isPaused = state?.overlayPaused ?? false;
+  localStorage.removeItem('projector_command');
+  localStorage.setItem('projector_command', JSON.stringify({
+    type: isPaused ? 'resume-overlay' : 'pause-overlay',
+  }));
+}
+
+// ── Resolution badge ──
+// Shows the screen resolution reported by player.html via localStorage.
+// Falls back to a manual text input when no player has reported in yet.
+// Example detected:   "Screen  1900 × 1200 · Viewport  1900 × 1200"
+// Example manual:     "[  1920×1080  ]"
+const resBadge = document.getElementById('res-badge');
+
+function renderResBadge() {
+  const raw = localStorage.getItem('projector_screen_res');
+  if (raw) {
+    try {
+      const { physW, physH, viewW, viewH } = JSON.parse(raw);
+      resBadge.innerHTML =
+        `Screen &nbsp;<strong>${physW} × ${physH}</strong>` +
+        ` &nbsp;·&nbsp; Viewport &nbsp;<strong>${viewW} × ${viewH}</strong>`;
+      return;
+    } catch { /* fall through to manual input */ }
+  }
+  // No player data – show a manual override input
+  const saved = localStorage.getItem('projector_manual_res') || '';
+  resBadge.innerHTML =
+    `Target res &nbsp;` +
+    `<input type="text" id="res-manual" placeholder="1920×1080" value="${esc(saved)}" title="Enter target resolution manually">`;
+  document.getElementById('res-manual').addEventListener('change', (e) => {
+    try { localStorage.setItem('projector_manual_res', e.target.value.trim()); } catch { /* non-fatal */ }
+  });
+}
+
+renderResBadge();
+
+// Re-render when the player writes its resolution back
+window.addEventListener('storage', (e) => {
+  if (e.key === 'projector_screen_res') renderResBadge();
+});
 
 // ── Init ──
 renderList();

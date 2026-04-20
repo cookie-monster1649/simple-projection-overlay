@@ -7,8 +7,13 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; background: #000; overflow: hidden; }
 
-  #stage  { position: fixed; inset: 0; background: #000; }
-  #player { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #stage      { position: fixed; inset: 0; background: #000; overflow: hidden; }
+
+  /* ── Cover-crop container ──
+     JS sizes #player-wrap so the video fills the full viewport height (or width),
+     overflow: hidden on #stage clips the bleed. */
+  #player-wrap { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); opacity: 1; transition: opacity 0.6s ease; }
+  #player      { display: block; width: 100%; height: 100%; }
 
   #overlay {
     position: absolute; inset: 0;
@@ -48,7 +53,9 @@
 <body>
 
 <div id="stage">
-  <div id="player"></div>
+  <div id="player-wrap">
+    <div id="player"></div>
+  </div>
   <div id="overlay"></div>
   <div id="hint">Press F11 for fullscreen &nbsp;·&nbsp; Space to pause</div>
 </div>
@@ -67,14 +74,65 @@
   // Declared here so all synchronous code in buildPlayer and callbacks can reach them
   // without hitting the TDZ (init(config) is called immediately below).
   let ytPlayer          = null;
+  let playerReady       = false;
+  let playerInitialised = false; // onReady re-fires on each loadVideoById; guard init to first call only
+  let pendingSeek       = null;  // { index, startSeconds } queued before onReady fires
   let currentVideoIndex = 0;
   let activeVideos      = [];
+
+  let videoTimeoutId    = null; // handle for the per-video max-duration timer
+  let pendingFadeIn     = false; // true while waiting for the next video to start so we can fade the player back in
 
   let currentImageIndex  = 0;
   let activeImages       = []; // mirrors images array for bounds-checking seek commands
   let overlayShow        = null; // the show() fn assigned by startOverlayLoop
   let overlayIntervalId  = null;
   let overlayIntervalMs  = 0;
+  let overlayFadeOutMs   = 350;  // kept in sync with startOverlayLoop for use in pauseOverlay
+  let overlayEasing      = 'ease';
+  let overlayBouncing    = false;
+  let overlayPaused      = false;
+
+  // ── Cover crop ──
+  // Sizes #player-wrap so the 16:9 video fills the viewport height (or width),
+  // letting #stage's overflow:hidden clip the bleed on whichever axis overflows.
+  // Example at 1900×1200 (ratio 1.58 < 1.78): fills full height → width = 1200*(16/9) = 2133px,
+  // so 116px are clipped on each side.
+  function applyCoverCrop() {
+    const vW = window.innerWidth;
+    const vH = window.innerHeight;
+    const aspect = 16 / 9;
+    const wrap = document.getElementById('player-wrap');
+    if (vW / vH > aspect) {
+      // Viewport wider than 16:9 → fill width, overflow height
+      wrap.style.width  = vW + 'px';
+      wrap.style.height = (vW / aspect) + 'px';
+    } else {
+      // Viewport narrower than 16:9 (e.g. 1900×1200) → fill height, overflow width
+      wrap.style.height = vH + 'px';
+      wrap.style.width  = (vH * aspect) + 'px';
+    }
+  }
+
+  // ── Resolution reporting ──
+  // Silently writes screen + viewport dimensions to localStorage so the manager
+  // can display them in its UI. No visible element added to the player.
+  function reportResolution() {
+    const dpr   = window.devicePixelRatio || 1;
+    const physW = Math.round(window.screen.width  * dpr);
+    const physH = Math.round(window.screen.height * dpr);
+    try {
+      localStorage.setItem('projector_screen_res', JSON.stringify({
+        physW, physH,
+        viewW: window.innerWidth,
+        viewH: window.innerHeight,
+      }));
+    } catch { /* non-fatal */ }
+  }
+
+  applyCoverCrop();
+  reportResolution();
+  window.addEventListener('resize', () => { applyCoverCrop(); reportResolution(); });
 
   if (!config) {
     showError('No active set found. <a href="index.html">Go back to the manager</a> and click Launch.');
@@ -89,7 +147,7 @@
     if (!ytPlayer) showError('YouTube API failed to load. Check your internet connection and <a href="">reload this page</a>.');
   }, 8000);
 
-  function init({ videos, images, interval, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default', bounce = false, bounceSize = 200, bounceSpeed = 150 }) {
+  function init({ videos, images, interval, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default', bounce = false, bounceSize = 200, bounceSpeed = 150, videoTimeout = 0 }) {
     if (!images?.length) { showError('No images in this set.'); return; }
     document.getElementById('overlay').style.backgroundImage = `url(${images[0].imageDataUrl})`;
     setTimeout(() => document.getElementById('hint').remove(), 6000);
@@ -97,7 +155,7 @@
     if (!videos?.length) { showError('No videos in this set.'); return; }
     const first = parseYouTube(videos[0]);
     if (!first) { showError('Invalid YouTube URL in the saved set.'); return; }
-    buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed });
+    buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout });
   }
 
   function showError(html) {
@@ -114,12 +172,26 @@
       localStorage.setItem('projector_state', JSON.stringify({
         videoIndex: currentVideoIndex,
         imageIndex: currentImageIndex,
+        overlayPaused,
       }));
     } catch { /* non-fatal – manager will hold its last-known state */ }
   }
 
+  // ── Faded seek ──
+  // Fades the player out, seeks, then fades back in for a clean visual transition.
+  function seekVideoFaded(index) {
+    const wrap = document.getElementById('player-wrap');
+    wrap.style.opacity = '0';
+    setTimeout(() => {
+      seekVideo(index);
+      wrap.style.opacity = '1';
+    }, 300);
+  }
+
   function seekVideo(index, startSeconds) {
-    if (!ytPlayer || !activeVideos[index]) return;
+    if (!activeVideos[index]) return;
+    // Queue if ytPlayer hasn't been created yet (YT API still loading) or if onReady hasn't fired
+    if (!ytPlayer || !playerReady) { pendingSeek = { index, startSeconds }; return; }
     const parsed = parseYouTube(activeVideos[index]);
     if (!parsed) return;
     currentVideoIndex = index;
@@ -138,15 +210,42 @@
     currentImageIndex = Math.max(0, Math.min(index, activeImages.length - 1));
     clearInterval(overlayIntervalId);
     overlayShow();
+    // Don't restart the interval if cycling is currently paused
+    if (!overlayPaused) overlayIntervalId = setInterval(overlayShow, overlayIntervalMs);
+  }
+
+  // ── Overlay pause / resume ──
+  function pauseOverlay() {
+    overlayPaused = true;
+    clearInterval(overlayIntervalId);
+    overlayIntervalId = null;
+    // Fade out immediately if an image is currently on screen
+    const overlay = document.getElementById('overlay');
+    if (overlay.classList.contains('visible')) {
+      overlay.style.transition = `opacity ${overlayFadeOutMs / 1000}s ${overlayEasing}`;
+      overlay.classList.remove('visible');
+      if (!overlayBouncing) setTimeout(() => { overlay.style.display = 'none'; }, overlayFadeOutMs + 50);
+    }
+    writeState();
+  }
+
+  function resumeOverlay() {
+    if (!overlayShow) return;
+    overlayPaused = false;
+    // Show immediately rather than making the operator wait a full interval
+    overlayShow();
     overlayIntervalId = setInterval(overlayShow, overlayIntervalMs);
+    // writeState() is called inside overlayShow
   }
 
   window.addEventListener('storage', (e) => {
     if (e.key !== 'projector_command') return;
     try {
       const cmd = JSON.parse(e.newValue);
-      if (cmd.type === 'seek-video') seekVideo(cmd.index);
-      else if (cmd.type === 'seek-image') seekImage(cmd.index);
+      if      (cmd.type === 'seek-video')     seekVideoFaded(cmd.index);
+      else if (cmd.type === 'seek-image')     seekImage(cmd.index);
+      else if (cmd.type === 'pause-overlay')  pauseOverlay();
+      else if (cmd.type === 'resume-overlay') resumeOverlay();
     } catch { /* ignore malformed */ }
   });
 
@@ -171,11 +270,40 @@
   }
 
   // ── Player ──
-  function buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed }) {
+  function buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout }) {
     activeVideos = videos;  // expose for seek commands
     activeImages = images;  // expose for bounds-checking in seekImage
     const first = parseYouTube(videos[0]);
     let stallTimer = null; // tracks buffering/unstarted watchdog
+
+    // ── Video timeout helpers ──
+    // Called whenever a video starts playing; arms the max-duration countdown.
+    function scheduleVideoTimeout() {
+      clearTimeout(videoTimeoutId);
+      videoTimeoutId = null;
+      if (!videoTimeout || videoTimeout <= 0) return;
+      videoTimeoutId = setTimeout(timeoutAdvance, videoTimeout * 1000);
+    }
+
+    // Fades out the player, loads the next video, then waits for it to start
+    // before fading back in. pendingFadeIn is read in the onStateChange handler.
+    // Example: 4 videos at 120 s timeout → each fades at 2:00 regardless of length.
+    function timeoutAdvance() {
+      clearTimeout(videoTimeoutId);
+      videoTimeoutId = null;
+      document.getElementById('player-wrap').style.opacity = '0';
+      pendingFadeIn = true;
+      currentVideoIndex = (currentVideoIndex + 1) % videos.length;
+      const next = parseYouTube(videos[currentVideoIndex]);
+      if (!next) return;
+      if (next.listId) {
+        ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
+      } else if (next.videoId) {
+        ytPlayer.loadVideoById(next.videoId);
+      }
+      if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
+      writeState();
+    }
 
     const playerVars = {
       autoplay: 1, controls: 0, rel: 0, modestbranding: 1,
@@ -192,11 +320,22 @@
       playerVars,
       events: {
         onReady: (e) => {
+          playerReady = true;
+          // YouTube re-fires onReady after every loadVideoById / loadPlaylist call.
+          // Guard the startup block so it only runs once.
+          if (playerInitialised) return;
+          playerInitialised = true;
           e.target.playVideo();
           if (quality !== 'default') e.target.setPlaybackQuality(quality);
           if (bounce) startBounce(bounceSize, bounceSpeed);
           startOverlayLoop(interval, images, fadeIn, fadeOut, easing, bounce);
           writeState();
+          // Flush any seek command that arrived before the iframe was ready
+          if (pendingSeek) {
+            const { index, startSeconds } = pendingSeek;
+            pendingSeek = null;
+            seekVideo(index, startSeconds);
+          }
         },
         onStateChange: (e) => {
           // ── Stall watchdog ──
@@ -205,22 +344,43 @@
           // position. Time is captured now so the seek target doesn't drift.
           clearTimeout(stallTimer);
           if (e.data === -1 || e.data === 3) {
+            clearTimeout(videoTimeoutId);
+            videoTimeoutId = null;
             const resumeAt = ytPlayer.getCurrentTime?.() ?? 0;
             stallTimer = setTimeout(() => seekVideo(currentVideoIndex, resumeAt), 30000);
           }
 
-          // State 0 = ended. Advance to next video in the list (wraps to start).
-          if (e.data === 0 && videos.length > 1) {
-            currentVideoIndex = (currentVideoIndex + 1) % videos.length;
-            const next = parseYouTube(videos[currentVideoIndex]);
-            if (!next) return;
-            if (next.listId) {
-              ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
-            } else if (next.videoId) {
-              ytPlayer.loadVideoById(next.videoId);
+          // State 1 = playing. Fade in if we were mid-crossfade, then arm the timeout.
+          if (e.data === 1) {
+            if (pendingFadeIn) {
+              pendingFadeIn = false;
+              document.getElementById('player-wrap').style.opacity = '1';
             }
-            if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
-            writeState();
+            scheduleVideoTimeout();
+          }
+
+          // State 2 = paused. Suspend the timeout – paused time shouldn't count.
+          if (e.data === 2) {
+            clearTimeout(videoTimeoutId);
+            videoTimeoutId = null;
+          }
+
+          // State 0 = ended. Advance to next video in the list (wraps to start).
+          if (e.data === 0) {
+            clearTimeout(videoTimeoutId);
+            videoTimeoutId = null;
+            if (videos.length > 1) {
+              currentVideoIndex = (currentVideoIndex + 1) % videos.length;
+              const next = parseYouTube(videos[currentVideoIndex]);
+              if (!next) return;
+              if (next.listId) {
+                ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
+              } else if (next.videoId) {
+                ytPlayer.loadVideoById(next.videoId);
+              }
+              if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
+              writeState();
+            }
           }
         },
         onError: (e) => {
@@ -260,6 +420,9 @@
     const overlay   = document.getElementById('overlay');
     const fadeOutMs = Math.round(fadeOut * 1000);
     overlayIntervalMs = intervalSec * 1000;
+    overlayFadeOutMs  = fadeOutMs;   // kept in sync so pauseOverlay can use them
+    overlayEasing     = easing;
+    overlayBouncing   = bouncing;
 
     // In bounce mode the element stays in the DOM; only opacity is toggled
     if (bouncing) overlay.style.display = 'block';
