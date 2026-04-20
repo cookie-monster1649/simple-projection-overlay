@@ -49,6 +49,7 @@
   .set-name   { font-size: 1rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.2rem; }
   .set-detail { font-family: ui-monospace, monospace; font-size: 0.72rem; color: var(--muted); }
   .set-detail-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.7; }
+  .set-warn { color: #e8a020; font-family: ui-monospace, monospace; font-size: 0.7rem; }
   .set-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
 
   /* ── Slideover panel ── */
@@ -389,7 +390,8 @@ function renderList() {
   list.innerHTML = sets.map(s => {
     const isLive    = windowOpen && s.id === activeSetId;
     const thumbUrl  = s.images?.[0]?.imageDataUrl || '';
-    const videoDesc = s.videos?.length === 1 ? esc(shortUrl(s.videos[0])) : `${s.videos?.length ?? 0} videos`;
+    const hasVideo   = s.videos?.length > 0;
+    const videoDesc  = !hasVideo ? 'no video' : s.videos.length === 1 ? esc(shortUrl(s.videos[0])) : `${s.videos.length} videos`;
     const imgDesc   = s.images?.length === 1 ? '1 image' : `${s.images?.length ?? 0} images`;
     const launchBtn = isLive
       ? `<button class="btn btn-live btn-sm" disabled>● Live</button>`
@@ -402,6 +404,7 @@ function renderList() {
       <div class="set-meta">
         <div class="set-name">${esc(s.name)}</div>
         <div class="set-detail">
+          ${!hasVideo ? '<div class="set-warn">⚠ No YouTube video — overlay only</div>' : ''}
           <div class="set-detail-row">${videoDesc} &nbsp;·&nbsp; ${imgDesc} &nbsp;·&nbsp; every ${s.interval}s</div>
           <div class="set-detail-row">fade ${s.fadeIn ?? 0.35}s↑ ${s.fadeOut ?? 0.35}s↓ &nbsp;·&nbsp; ${qualityLabel(s.quality)}${s.bounce ? ' &nbsp;·&nbsp; bounce' : ''}${s.videoTimeout ? ` &nbsp;·&nbsp; max ${s.videoTimeout}s/video` : ''}</div>
         </div>
@@ -640,12 +643,11 @@ document.getElementById('save-btn').addEventListener('click', () => {
   const videoTimeoutRaw = parseInt(document.getElementById('f-video-timeout').value, 10);
   const videoTimeout    = Number.isFinite(videoTimeoutRaw) && videoTimeoutRaw > 0 ? videoTimeoutRaw : 0;
 
-  const images = formImages.map(img => ({ imageDataUrl: img.imageDataUrl, duration: Math.max(1, img.duration || 5) }));
+  const images = formImages
+    .filter(img => img.imageDataUrl)
+    .map(img => ({ imageDataUrl: img.imageDataUrl, duration: Math.max(1, img.duration || 5) }));
 
-  if (!name)           { err.textContent = 'Please give this set a name.'; return; }
-  if (!videos.length)  { err.textContent = 'Please enter at least one YouTube URL.'; return; }
-  if (!images.length)  { err.textContent = 'Please add at least one overlay image.'; return; }
-  if (images.some(img => !img.imageDataUrl)) { err.textContent = 'Please choose a file for each image slot.'; return; }
+  if (!name) { err.textContent = 'Please give this set a name.'; return; }
 
   if (editingId) {
     sets = sets.map(s => s.id === editingId ? { ...s, name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout } : s);
