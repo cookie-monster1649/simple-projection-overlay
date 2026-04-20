@@ -60,6 +60,7 @@
 <div id="error"></div>
 
 <script src="https://www.youtube.com/iframe_api"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js"></script>
 <script>
   // ── Config from manager ──
   // { videos, images:[{imageDataUrl,duration}], interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed }
@@ -90,6 +91,9 @@
   let overlayEasing      = 'ease';
   let overlayBouncing    = false;
   let overlayPaused      = false;
+
+  let pixiApp  = null; // PIXI.Application singleton, created lazily
+  let activeFx = null; // { stop } handle for the current running effect
 
   // ── Cover crop ──
   // Sizes #player-wrap so the 16:9 video fills the viewport height (or width),
@@ -130,7 +134,11 @@
 
   applyCoverCrop();
   reportResolution();
-  window.addEventListener('resize', () => { applyCoverCrop(); reportResolution(); });
+  window.addEventListener('resize', () => {
+    applyCoverCrop();
+    reportResolution();
+    if (pixiApp) pixiApp.renderer.resize(window.innerWidth, window.innerHeight);
+  });
 
   if (!config) {
     showError('No active set found. <a href="index.html">Go back to the manager</a> and click Launch.');
@@ -224,6 +232,7 @@
       overlay.classList.remove('visible');
       if (!overlayBouncing) setTimeout(() => { overlay.style.display = 'none'; }, overlayFadeOutMs + 50);
     }
+    if (activeFx) hideFx(overlayFadeOutMs / 1000, overlayEasing);
     writeState();
   }
 
@@ -413,6 +422,244 @@
     window.YT && window.YT.Player ? create() : (window.onYouTubeIframeAPIReady = create);
   }
 
+  // ── Pixi FX engine ──
+  // GPU-based distortion effects using PixiJS v7 + pixi-filters.
+  // The ticker runs only while an FX overlay is on screen; between cycles it is
+  // stopped entirely so the GPU sits idle during the long pauses between overlays.
+
+  function initPixi() {
+    if (pixiApp) return;
+    pixiApp = new PIXI.Application({
+      width:           window.innerWidth,
+      height:          window.innerHeight,
+      backgroundAlpha: 0,
+      antialias:       false,
+      resolution:      1,
+      autoStart:       false,
+    });
+    const canvas = pixiApp.view;
+    canvas.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:1;opacity:0;display:none;transition:none;';
+    document.getElementById('stage').appendChild(canvas);
+
+    // [DEBUG] Log the WebGL context attributes so we can see how alpha/premultiply are configured
+    const gl = pixiApp.renderer.gl;
+    const ctxAttrs = gl.getContextAttributes();
+    console.log('[FX DEBUG] WebGL context attributes:', ctxAttrs);
+    console.log('[FX DEBUG] premultipliedAlpha:', ctxAttrs.premultipliedAlpha, '| alpha:', ctxAttrs.alpha);
+  }
+
+  function stopFx() {
+    if (activeFx) { activeFx.stop(); activeFx = null; }
+    if (!pixiApp) return;
+    pixiApp.ticker.stop();
+    pixiApp.stage.removeChildren();
+    const canvas = pixiApp.view;
+    canvas.style.opacity = '0';
+    canvas.style.display = 'none';
+  }
+
+  function showFx(img, fadeInSec, easing) {
+    initPixi();
+    stopFx();
+    const htmlImg = new Image();
+    htmlImg.onload = () => {
+      const texture = PIXI.Texture.from(htmlImg);
+      const sprite  = new PIXI.Sprite(texture);
+
+      // [DEBUG] Log texture alpha mode — PIXI.ALPHA_MODES: 0=NPM, 1=UNPACK, 2=PMA, 3=NO_PREMULTIPLIED_ALPHA
+      console.log('[FX DEBUG] texture.baseTexture.alphaMode:', texture.baseTexture.alphaMode,
+        '(0=NPM, 1=UNPACK, 2=PMA, 3=NO_PREMULTIPLIED_ALPHA)');
+      console.log('[FX DEBUG] texture size:', texture.width, 'x', texture.height);
+      console.log('[FX DEBUG] applying effect:', img.effect, 'speed:', img.effectSpeed);
+
+      // Match the CSS background-size / background-position behaviour
+      const vpW = window.innerWidth;
+      const vpH = window.innerHeight;
+      const pct = img.size ?? 80;
+      const w   = vpW * pct / 100;
+      const h   = w * (texture.height / texture.width);
+      const [hPos, vPos] = (img.position || 'center center').split(' ');
+      sprite.x = hPos === 'left'  ? 0 : hPos === 'right'  ? vpW - w : (vpW - w) / 2;
+      sprite.y = vPos === 'top'   ? 0 : vPos === 'bottom' ? vpH - h : (vpH - h) / 2;
+      sprite.width  = w;
+      sprite.height = h;
+
+      const { filter, tickFn } = makeFxFilter(img.effect, img.effectSpeed);
+
+      // [DEBUG] Add ?nofx to the player URL to skip the filter and test sprite-only rendering
+      const debugNoFilter = new URLSearchParams(window.location.search).has('nofx');
+      if (filter && !debugNoFilter) sprite.filters = [filter];
+      console.log('[FX DEBUG] filter applied:', !!filter && !debugNoFilter, '| nofx mode:', debugNoFilter);
+      console.log('[FX DEBUG] renderer.background.alpha:', pixiApp.renderer.background.alpha);
+
+      pixiApp.stage.addChild(sprite);
+
+      // Fade in the canvas using the same timing as the CSS overlay path
+      const canvas = pixiApp.view;
+      canvas.style.transition = `opacity ${fadeInSec}s ${easing}`;
+      canvas.style.display    = 'block';
+      canvas.style.opacity    = '0';
+      void canvas.offsetWidth;
+      canvas.style.opacity    = '1';
+
+      // 30 fps is smooth enough for all effects and saves power on a fanless machine
+      pixiApp.ticker.maxFPS = img.effectSpeed === 'fast' ? 60 : 30;
+
+      // [DEBUG] After first rendered frame, read a corner pixel — should be (0,0,0,0) if canvas is transparent
+      let debugDone = false;
+      const debugReadPixel = () => {
+        if (debugDone) return;
+        debugDone = true;
+        const gl = pixiApp.renderer.gl;
+        const px = new Uint8Array(4);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        console.log('[FX DEBUG] corner pixel (0,0) after first render: rgba(' + px[0]+','+px[1]+','+px[2]+','+px[3]+')');
+        console.log('[FX DEBUG] (expect 0,0,0,0=transparent; 0,0,0,255=opaque black=bug)');
+        // Also sample a pixel in the centre of the sprite where it should be opaque
+        const cx = Math.round(vpW / 2), cy = Math.round(vpH / 2);
+        gl.readPixels(cx, cy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        console.log('[FX DEBUG] centre pixel ('+cx+','+cy+'): rgba('+px[0]+','+px[1]+','+px[2]+','+px[3]+')');
+      };
+
+      pixiApp.ticker.add(tickFn);
+      pixiApp.ticker.add(debugReadPixel);
+      pixiApp.ticker.start();
+
+      activeFx = {
+        stop: () => {
+          pixiApp.ticker.remove(tickFn);
+          if (sprite.filters) sprite.filters = [];
+        },
+      };
+    };
+    htmlImg.src = img.imageDataUrl;
+  }
+
+  function hideFx(fadeOutSec, easing) {
+    if (!pixiApp) return;
+    const canvas = pixiApp.view;
+    canvas.style.transition = `opacity ${fadeOutSec}s ${easing}`;
+    canvas.style.opacity    = '0';
+    setTimeout(stopFx, Math.round(fadeOutSec * 1000) + 50);
+  }
+
+  function makeFxFilter(effect, speedKey) {
+    const rate = { slow: 0.3, medium: 0.8, fast: 2.5 }[speedKey ?? 'medium'] ?? 0.8;
+
+    switch (effect) {
+      case 'wave-h': {
+        const f = new PIXI.Filter(undefined, `
+          precision mediump float;
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform float uTime;
+          void main() {
+            vec2 uv = vTextureCoord;
+            uv.x += sin(uv.y * 18.0 + uTime) * 0.025;
+            gl_FragColor = texture2D(uSampler, clamp(uv, 0.0, 1.0));
+          }`, { uTime: 0.0 });
+        return { filter: f, tickFn: d => { f.uniforms.uTime += rate * d * 0.05; } };
+      }
+      case 'wave-v': {
+        const f = new PIXI.Filter(undefined, `
+          precision mediump float;
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform float uTime;
+          void main() {
+            vec2 uv = vTextureCoord;
+            uv.y += sin(uv.x * 18.0 + uTime) * 0.025;
+            gl_FragColor = texture2D(uSampler, clamp(uv, 0.0, 1.0));
+          }`, { uTime: 0.0 });
+        return { filter: f, tickFn: d => { f.uniforms.uTime += rate * d * 0.05; } };
+      }
+      case 'ripple': {
+        const f = new PIXI.Filter(undefined, `
+          precision mediump float;
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform float uTime;
+          void main() {
+            vec2 uv = vTextureCoord;
+            vec2 c = uv - 0.5;
+            float d = length(c);
+            vec2 dir = d > 0.001 ? normalize(c) : vec2(0.0);
+            uv += dir * sin(d * 20.0 - uTime) * 0.025;
+            gl_FragColor = texture2D(uSampler, clamp(uv, 0.0, 1.0));
+          }`, { uTime: 0.0 });
+        return { filter: f, tickFn: d => { f.uniforms.uTime += rate * d * 0.06; } };
+      }
+      case 'twist': {
+        const f = new PIXI.Filter(undefined, `
+          precision mediump float;
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform float uTime;
+          void main() {
+            vec2 uv = vTextureCoord - 0.5;
+            float d = length(uv);
+            float a = atan(uv.y, uv.x) + sin(uTime) * 1.5 * max(0.0, 1.0 - d * 1.8);
+            vec2 t = d * vec2(cos(a), sin(a)) + 0.5;
+            gl_FragColor = texture2D(uSampler, clamp(t, 0.0, 1.0));
+          }`, { uTime: 0.0 });
+        return { filter: f, tickFn: d => { f.uniforms.uTime += rate * d * 0.04; } };
+      }
+      case 'swirl': {
+        const f = new PIXI.Filter(undefined, `
+          precision mediump float;
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform float uTime;
+          void main() {
+            vec2 uv = vTextureCoord - 0.5;
+            float d = length(uv);
+            float a = atan(uv.y, uv.x) + uTime * 1.2 * max(0.0, 1.0 - d * 2.0);
+            vec2 s = d * vec2(cos(a), sin(a)) + 0.5;
+            gl_FragColor = texture2D(uSampler, clamp(s, 0.0, 1.0));
+          }`, { uTime: 0.0 });
+        return { filter: f, tickFn: d => { f.uniforms.uTime += rate * d * 0.04; } };
+      }
+      case 'glitch': {
+        const f = new PIXI.Filter(undefined, `
+          precision mediump float;
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform float uSeed;
+          void main() {
+            vec2 uv = vTextureCoord;
+            float slice = floor(uv.y * 10.0);
+            float r1 = fract(sin(slice * 127.1 + uSeed) * 43758.5);
+            float r2 = fract(sin(slice * 311.7 + uSeed * 2.0) * 17231.3);
+            uv.x += (r1 - 0.5) * 0.12 * step(0.7, r2);
+            gl_FragColor = texture2D(uSampler, clamp(uv, 0.0, 1.0));
+          }`, { uSeed: 0.0 });
+        let t = 0;
+        return { filter: f, tickFn: d => {
+          t += d;
+          if (t > 20 / rate) { t = 0; f.uniforms.uSeed = Math.random() * 100; }
+        }};
+      }
+      case 'pixelate': {
+        const f = new PIXI.Filter(undefined, `
+          precision mediump float;
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform float uPixelSize;
+          void main() {
+            vec2 uv = (floor(vTextureCoord / uPixelSize) + 0.5) * uPixelSize;
+            gl_FragColor = texture2D(uSampler, clamp(uv, 0.0, 1.0));
+          }`, { uPixelSize: 0.01 });
+        let t = 0;
+        return { filter: f, tickFn: d => {
+          t += d * rate * 0.04;
+          f.uniforms.uPixelSize = 0.01 + 0.07 * Math.abs(Math.sin(t));
+        }};
+      }
+      default:
+        return { filter: null, tickFn: () => {} };
+    }
+  }
+
   // ── Overlay loop ──
   function startOverlayLoop(intervalSec, images, fadeIn, fadeOut, easing, bouncing) {
     const overlay   = document.getElementById('overlay');
@@ -431,20 +678,28 @@
       writeState();
       currentImageIndex = (currentImageIndex + 1) % images.length;
 
-      overlay.style.backgroundImage    = `url(${img.imageDataUrl})`;
-      overlay.style.backgroundSize     = img.size ? `${img.size}%` : '80%';
-      overlay.style.backgroundPosition = img.position || 'center';
+      // Effects are disabled in bounce mode (the CSS overlay handles positioning there)
+      const hasEffect = typeof PIXI !== 'undefined' && img.effect && img.effect !== 'none' && !bouncing;
 
-      if (!bouncing) overlay.style.display = 'block';
-      overlay.style.transition = `opacity ${fadeIn}s ${easing}`;
-      void overlay.offsetWidth; // force reflow so transition fires from opacity:0
-      overlay.classList.add('visible');
+      if (hasEffect) {
+        showFx(img, fadeIn, easing);
+        setTimeout(() => hideFx(fadeOut, easing), img.duration * 1000);
+      } else {
+        overlay.style.backgroundImage    = `url(${img.imageDataUrl})`;
+        overlay.style.backgroundSize     = img.size ? `${img.size}%` : '80%';
+        overlay.style.backgroundPosition = img.position || 'center';
 
-      setTimeout(() => {
-        overlay.style.transition = `opacity ${fadeOut}s ${easing}`;
-        overlay.classList.remove('visible');
-        if (!bouncing) setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
-      }, img.duration * 1000);
+        if (!bouncing) overlay.style.display = 'block';
+        overlay.style.transition = `opacity ${fadeIn}s ${easing}`;
+        void overlay.offsetWidth; // force reflow so transition fires from opacity:0
+        overlay.classList.add('visible');
+
+        setTimeout(() => {
+          overlay.style.transition = `opacity ${fadeOut}s ${easing}`;
+          overlay.classList.remove('visible');
+          if (!bouncing) setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
+        }, img.duration * 1000);
+      }
     };
 
     // Expose so seekImage() can cancel and restart

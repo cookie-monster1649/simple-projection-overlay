@@ -121,6 +121,14 @@
   .size-ctrl { display: flex; align-items: center; gap: 0.45rem; flex: 1; min-width: 0; }
   .size-ctrl-label { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); flex-shrink: 0; }
   .size-ctrl input[type="range"] { flex: 1; accent-color: var(--accent); cursor: pointer; min-width: 0; }
+
+  .image-item-fx { display: flex; align-items: center; gap: 0.5rem; padding-left: calc(96px + 0.6rem); flex-wrap: wrap; }
+  .image-item-fx select { font-family: ui-monospace, monospace; font-size: 0.72rem; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 2px; padding: 0.2rem 0.35rem; cursor: pointer; }
+  .image-item-fx select:focus { outline: none; border-color: var(--accent); }
+  .fx-speed { display: flex; align-items: center; gap: 0.3rem; }
+  .speed-btn { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase; background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 2px; padding: 0.2rem 0.45rem; cursor: pointer; transition: color 0.1s, border-color 0.1s; }
+  .speed-btn:hover { color: var(--ink); border-color: var(--muted); }
+  .speed-btn.active { color: var(--accent); border-color: var(--accent); }
   .size-val { width: 52px; text-align: center; flex-shrink: 0; }
 
   /* ── Bounce toggle ── */
@@ -591,6 +599,23 @@ function renderImageInputs() {
           <input type="number" class="size-val" data-idx="${i}" data-kind="size" min="10" max="200" step="1" value="${img.size ?? 80}" title="Size %">
         </div>
       </div>
+      <div class="image-item-fx">
+        <select data-idx="${i}" data-kind="effect">
+          <option value="none"     ${(img.effect||'none')==='none'     ? 'selected':''}>No effect</option>
+          <option value="wave-h"   ${(img.effect||'none')==='wave-h'   ? 'selected':''}>Wave →</option>
+          <option value="wave-v"   ${(img.effect||'none')==='wave-v'   ? 'selected':''}>Wave ↑</option>
+          <option value="ripple"   ${(img.effect||'none')==='ripple'   ? 'selected':''}>Ripple</option>
+          <option value="twist"    ${(img.effect||'none')==='twist'    ? 'selected':''}>Twist</option>
+          <option value="swirl"    ${(img.effect||'none')==='swirl'    ? 'selected':''}>Swirl</option>
+          <option value="glitch"   ${(img.effect||'none')==='glitch'   ? 'selected':''}>Glitch</option>
+          <option value="pixelate" ${(img.effect||'none')==='pixelate' ? 'selected':''}>Pixelate</option>
+        </select>
+        <div class="fx-speed"${(img.effect||'none')==='none' ? ' hidden' : ''}>
+          ${['slow','medium','fast'].map(s =>
+            `<button type="button" class="speed-btn${(img.effectSpeed||'medium')===s?' active':''}" data-idx="${i}" data-speed="${s}">${s}</button>`
+          ).join('')}
+        </div>
+      </div>
     </div>`;
   }).join('');
 
@@ -609,7 +634,8 @@ function renderImageInputs() {
           canvas.width  = Math.round(img.width  * scale);
           canvas.height = Math.round(img.height * scale);
           canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-          formImages[idx].imageDataUrl = canvas.toDataURL('image/jpeg', 0.90);
+          const hasAlpha = ['image/png', 'image/gif', 'image/webp'].includes(file.type);
+          formImages[idx].imageDataUrl = hasAlpha ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.90);
           const item = e.target.closest('.image-item');
           item.querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
         };
@@ -662,6 +688,24 @@ function renderImageInputs() {
       e.target.closest('.image-item').querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
     });
   });
+
+  container.querySelectorAll('select[data-kind="effect"]').forEach(sel => {
+    sel.addEventListener('change', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      formImages[idx].effect = e.target.value;
+      formDirty = true;
+      e.target.closest('.image-item-fx').querySelector('.fx-speed').hidden = e.target.value === 'none';
+    });
+  });
+
+  container.querySelectorAll('.speed-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      formImages[idx].effectSpeed = e.target.dataset.speed;
+      formDirty = true;
+      e.target.closest('.fx-speed').querySelectorAll('.speed-btn').forEach(b => b.classList.toggle('active', b === e.target));
+    });
+  });
 }
 
 function moveImage(i, dir) {
@@ -673,7 +717,7 @@ function moveImage(i, dir) {
 }
 
 function addImage() {
-  formImages.push({ imageDataUrl: null, duration: 5, size: 80, position: 'center center' });
+  formImages.push({ imageDataUrl: null, duration: 5, size: 80, position: 'center center', effect: 'none', effectSpeed: 'medium' });
   renderImageInputs();
 }
 
@@ -735,7 +779,14 @@ document.getElementById('save-btn').addEventListener('click', () => {
 
   const images = formImages
     .filter(img => img.imageDataUrl)
-    .map(img => ({ imageDataUrl: img.imageDataUrl, duration: Math.max(1, img.duration || 5), size: img.size ?? 80, position: img.position || 'center center' }));
+    .map(img => ({
+      imageDataUrl: img.imageDataUrl,
+      duration:     Math.max(1, img.duration || 5),
+      size:         img.size ?? 80,
+      position:     img.position    || 'center center',
+      effect:       img.effect      || 'none',
+      effectSpeed:  img.effectSpeed || 'medium',
+    }));
 
   if (!name) { err.textContent = 'Please give this set a name.'; return; }
 
@@ -840,8 +891,9 @@ function launchSet(id) {
   }
 
   if (playerWin && !playerWin.closed) {
-    // Window already open – navigate it to reload with the new config
-    playerWin.location.href = 'player.html';
+    // Config is already in localStorage; reload forces a fresh read of it.
+    // Setting location.href to the same URL is silently ignored by browsers.
+    playerWin.location.reload();
   } else {
     // No window open yet – open one (named so it's always the same slot)
     playerWin = window.open('player.html', 'projector-output', 'width=1280,height=720');
@@ -940,7 +992,9 @@ async function compressDataUrl(dataUrl) {
       canvas.width  = Math.round(img.width  * scale);
       canvas.height = Math.round(img.height * scale);
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/jpeg', 0.90));
+      const srcMime = dataUrl.split(';')[0].split(':')[1] || '';
+      const hasAlpha = ['image/png', 'image/gif', 'image/webp'].includes(srcMime);
+      resolve(hasAlpha ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.90));
     };
     img.onerror = () => resolve(dataUrl);
     img.src = dataUrl;
@@ -952,7 +1006,7 @@ async function migrateImageCompression() {
   for (const set of sets) {
     if (!Array.isArray(set.images)) continue;
     for (const img of set.images) {
-      if (!img.imageDataUrl || img.imageDataUrl.startsWith('data:image/jpeg')) continue;
+      if (!img.imageDataUrl || img.imageDataUrl.startsWith('data:image/jpeg') || img.imageDataUrl.startsWith('data:image/png')) continue;
       img.imageDataUrl = await compressDataUrl(img.imageDataUrl);
       changed = true;
     }
