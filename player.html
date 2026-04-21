@@ -62,12 +62,32 @@
 <script src="https://www.youtube.com/iframe_api"></script>
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js"></script>
 <script>
-  // ── Config from manager ──
+  // ── IndexedDB helpers (mirrors index.html) ──
+  async function openAppDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('projector-app', 2);
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('workspace')) db.createObjectStore('workspace');
+        if (!db.objectStoreNames.contains('active'))    db.createObjectStore('active');
+        if (!db.objectStoreNames.contains('sets'))      db.createObjectStore('sets');
+      };
+      req.onsuccess = e => resolve(e.target.result);
+      req.onerror   = e => reject(e.target.error);
+    });
+  }
+  async function idbGet(store, key = 'v') {
+    const db = await openAppDb();
+    return new Promise((res, rej) => {
+      const req = db.transaction(store).objectStore(store).get(key);
+      req.onsuccess = () => res(req.result ?? null);
+      req.onerror   = () => rej(req.error);
+    });
+  }
+
+  // ── Config from manager (loaded async from IndexedDB) ──
   // { videos, images:[{imageDataUrl,duration}], interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed }
-  const config = (() => {
-    try { return JSON.parse(localStorage.getItem('projector_active') || 'null'); }
-    catch { return null; }
-  })();
+  let config = null;
 
   // ── Module-level state ──
   // Declared here so all synchronous code in buildPlayer and callbacks can reach them
@@ -144,11 +164,11 @@
     if (activeFx?.sprite) layoutSprite(activeFx.sprite, activeFx.img, activeFx.texture);
   });
 
-  if (!config) {
-    showError('No active set found. <a href="index.html">Go back to the manager</a> and click Launch.');
-  } else {
-    init(config);
-  }
+  (async () => {
+    config = await idbGet('active');
+    if (!config) showError('No active set found. <a href="index.html">Go back to the manager</a> and click Launch.');
+    else init(config);
+  })();
 
   // ── YouTube API load watchdog ──
   // If the API script never calls back (network blip, blocked, etc.), fail visibly
@@ -202,20 +222,11 @@
 
   function seekVideo(index, startSeconds) {
     if (!activeVideos[index]) return;
-    // Queue if ytPlayer hasn't been created yet (YT API still loading) or if onReady hasn't fired
     if (!ytPlayer || !playerReady) { pendingSeek = { index, startSeconds }; return; }
     const video = activeVideos[index];
-    const parsed = parseYouTube(video.url);
-    if (!parsed) return;
     currentVideoIndex = index;
-    // startSeconds from the stall watchdog (resume in-place) takes priority over the configured startAt
     const effectiveStart = startSeconds > 0 ? startSeconds : (video.startAt || 0);
-    if (parsed.listId) {
-      ytPlayer.loadPlaylist({ list: parsed.listId, listType: 'playlist' });
-    } else if (parsed.videoId) {
-      ytPlayer.loadVideoById(effectiveStart > 0 ? { videoId: parsed.videoId, startSeconds: effectiveStart } : parsed.videoId);
-    }
-    if (config.quality !== 'default') ytPlayer.setPlaybackQuality(config.quality);
+    loadVideoAt(video, effectiveStart);
     writeState();
   }
 
@@ -284,17 +295,61 @@
     } catch { return null; }
   }
 
+  // ── Load helper: YouTube or local/direct URL, uses module-level ytPlayer ──
+  function loadVideoAt(videoObj, start) {
+    const s = start != null ? start : (videoObj.startAt || 0);
+    const parsed = parseYouTube(videoObj.url);
+    if (parsed) {
+      if (parsed.listId) ytPlayer.loadPlaylist({ list: parsed.listId, listType: 'playlist' });
+      else if (parsed.videoId) ytPlayer.loadVideoById(s > 0 ? { videoId: parsed.videoId, startSeconds: s } : parsed.videoId);
+      if (config.quality !== 'default') ytPlayer.setPlaybackQuality(config.quality);
+    } else {
+      ytPlayer.loadVideoById(s > 0 ? { videoId: videoObj.url, startSeconds: s } : videoObj.url);
+    }
+  }
+
+  // ── HTML5 video adapter (mirrors YT.Player API so all existing code works unchanged) ──
+  function buildHtml5Player(firstVideo, onReady, onStateChange, onError) {
+    const vid = document.createElement('video');
+    vid.style.cssText = 'display:block;width:100%;height:100%;object-fit:contain;background:#000;';
+    vid.setAttribute('playsinline', '');
+    document.getElementById('player').appendChild(vid);
+    let started = false;
+    const adapter = {
+      loadVideoById(arg) {
+        const src   = typeof arg === 'string' ? arg : arg.videoId;
+        const start = typeof arg === 'object' ? (arg.startSeconds ?? 0) : 0;
+        vid.src = src;
+        if (start > 0) vid.currentTime = start;
+        if (started) vid.play().catch(() => {});
+      },
+      loadPlaylist()       {},
+      playVideo()          { vid.play().catch(() => {}); },
+      pauseVideo()         { vid.pause(); },
+      getCurrentTime()     { return vid.currentTime; },
+      getPlayerState()     { return (!vid.paused && !vid.ended) ? 1 : vid.ended ? 0 : vid.paused ? 2 : 3; },
+      setPlaybackQuality() {},
+      seekTo(s)            { vid.currentTime = s; },
+    };
+    vid.addEventListener('canplay',  () => { if (!started) { started = true; onReady({ target: adapter }); } });
+    vid.addEventListener('play',     () => onStateChange({ data: 1, target: adapter }));
+    vid.addEventListener('pause',    () => { if (!vid.ended) onStateChange({ data: 2, target: adapter }); });
+    vid.addEventListener('ended',    () => onStateChange({ data: 0, target: adapter }));
+    vid.addEventListener('waiting',  () => onStateChange({ data: 3, target: adapter }));
+    vid.addEventListener('error',    () => onError({ data: 5, target: adapter }));
+    const s = firstVideo.startAt || 0;
+    adapter.loadVideoById(s > 0 ? { videoId: firstVideo.url, startSeconds: s } : firstVideo.url);
+    return adapter;
+  }
+
   // ── Player ──
   function buildPlayer(rawVideos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout, videoFadeDuration = 2 }) {
-    // Normalise to { url, startAt } objects for backward compat with old string-only format
     const videos = rawVideos.map(v => typeof v === 'string' ? { url: v, startAt: 0 } : v);
-    activeVideos = videos;  // expose for seek commands
-    activeImages = images;  // expose for bounds-checking in seekImage
-    const first = parseYouTube(videos[0].url);
-    let stallTimer = null; // tracks buffering/unstarted watchdog
+    activeVideos = videos;
+    activeImages = images;
+    const firstParsed = parseYouTube(videos[0].url);
+    let stallTimer = null;
 
-    // ── Video timeout helpers ──
-    // Called whenever a video starts playing; arms the max-duration countdown.
     function scheduleVideoTimeout() {
       clearTimeout(videoTimeoutId);
       videoTimeoutId = null;
@@ -302,9 +357,6 @@
       videoTimeoutId = setTimeout(timeoutAdvance, videoTimeout * 1000);
     }
 
-    // Fades out the player, loads the next video, then waits for it to start
-    // playing AND for the fade-out to finish before fading back in.
-    // Example: 4 videos at 120 s timeout → each fades at 2:00 regardless of length.
     function timeoutAdvance() {
       clearTimeout(videoTimeoutId);
       videoTimeoutId = null;
@@ -314,18 +366,81 @@
       pendingFadeIn = true;
       fadeOutEndTime = Date.now() + videoFadeDuration * 1000;
       currentVideoIndex = (currentVideoIndex + 1) % videos.length;
-      const nextVid = videos[currentVideoIndex];
-      const next = parseYouTube(nextVid.url);
-      if (!next) return;
-      if (next.listId) {
-        ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
-      } else if (next.videoId) {
-        ytPlayer.loadVideoById(nextVid.startAt > 0 ? { videoId: next.videoId, startSeconds: nextVid.startAt } : next.videoId);
-      }
-      if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
+      loadVideoAt(videos[currentVideoIndex]);
       writeState();
     }
 
+    function handleReady(e) {
+      playerReady = true;
+      if (playerInitialised) return;
+      playerInitialised = true;
+      e.target.playVideo();
+      if (quality !== 'default') e.target.setPlaybackQuality(quality);
+      if (bounce) startBounce(bounceSize, bounceSpeed);
+      startOverlayLoop(interval, images, fadeIn, fadeOut, easing, bounce);
+      writeState();
+      if (pendingSeek) {
+        const { index, startSeconds } = pendingSeek;
+        pendingSeek = null;
+        seekVideo(index, startSeconds);
+      }
+    }
+
+    function handleStateChange(e) {
+      clearTimeout(stallTimer);
+      if (e.data === -1 || e.data === 3) {
+        clearTimeout(videoTimeoutId);
+        videoTimeoutId = null;
+        const resumeAt = ytPlayer.getCurrentTime?.() ?? 0;
+        stallTimer = setTimeout(() => seekVideo(currentVideoIndex, resumeAt), 30000);
+      }
+      if (e.data === 1) {
+        if (pendingFadeIn) {
+          pendingFadeIn = false;
+          const remaining = fadeOutEndTime - Date.now();
+          const doFadeIn = () => {
+            const wrap = document.getElementById('player-wrap');
+            wrap.style.transition = `opacity ${videoFadeDuration}s ease`;
+            wrap.style.opacity = '1';
+          };
+          if (remaining > 0) setTimeout(doFadeIn, remaining); else doFadeIn();
+        }
+        scheduleVideoTimeout();
+      }
+      if (e.data === 2) { clearTimeout(videoTimeoutId); videoTimeoutId = null; }
+      if (e.data === 0) {
+        clearTimeout(videoTimeoutId);
+        videoTimeoutId = null;
+        if (videos.length > 1) {
+          currentVideoIndex = (currentVideoIndex + 1) % videos.length;
+          loadVideoAt(videos[currentVideoIndex]);
+          writeState();
+        }
+      }
+    }
+
+    function handleError(e) {
+      if ((e.data === 100 || e.data === 101 || e.data === 150) && videos.length > 1) {
+        currentVideoIndex = (currentVideoIndex + 1) % videos.length;
+        loadVideoAt(videos[currentVideoIndex]);
+        writeState();
+        return;
+      }
+      const msgs = {
+        2: 'Invalid video ID.', 5: 'HTML5 player error – the video may have an unsupported format.',
+        100: 'Video not found or private.', 101: 'Embedding disabled by owner.', 150: 'Embedding disabled by owner.',
+      };
+      showError('Player error ' + e.data + ': ' + (msgs[e.data] || 'Unknown error.'));
+    }
+
+    // Local / blob / direct URL – skip YouTube IFrame entirely
+    if (videos[0].url && !firstParsed) {
+      ytPlayer = buildHtml5Player(videos[0], handleReady, handleStateChange, handleError);
+      return;
+    }
+
+    // ── YouTube IFrame path ──
+    const first = firstParsed;
     const playerVars = {
       autoplay: 1, controls: 0, rel: 0, modestbranding: 1,
       playsinline: 1, fs: 0, iv_load_policy: 3, enablejsapi: 1,
@@ -336,108 +451,9 @@
 
     const cfg = {
       width: '100%', height: '100%',
-      // youtube-nocookie.com is more restrictive and triggers error 5 on some content;
-      // we're already on a localhost http origin so youtube.com is safe here
       host: 'https://www.youtube.com',
       playerVars,
-      events: {
-        onReady: (e) => {
-          playerReady = true;
-          // YouTube re-fires onReady after every loadVideoById / loadPlaylist call.
-          // Guard the startup block so it only runs once.
-          if (playerInitialised) return;
-          playerInitialised = true;
-          e.target.playVideo();
-          if (quality !== 'default') e.target.setPlaybackQuality(quality);
-          if (bounce) startBounce(bounceSize, bounceSpeed);
-          startOverlayLoop(interval, images, fadeIn, fadeOut, easing, bounce);
-          writeState();
-          // Flush any seek command that arrived before the iframe was ready
-          if (pendingSeek) {
-            const { index, startSeconds } = pendingSeek;
-            pendingSeek = null;
-            seekVideo(index, startSeconds);
-          }
-        },
-        onStateChange: (e) => {
-          // ── Stall watchdog ──
-          // States -1 (unstarted) and 3 (buffering) can get stuck permanently after
-          // a network blip. If either persists for 30 s, force-reload from the same
-          // position. Time is captured now so the seek target doesn't drift.
-          clearTimeout(stallTimer);
-          if (e.data === -1 || e.data === 3) {
-            clearTimeout(videoTimeoutId);
-            videoTimeoutId = null;
-            const resumeAt = ytPlayer.getCurrentTime?.() ?? 0;
-            stallTimer = setTimeout(() => seekVideo(currentVideoIndex, resumeAt), 30000);
-          }
-
-          // State 1 = playing. Fade in once the fade-out is also complete, then arm the timeout.
-          if (e.data === 1) {
-            if (pendingFadeIn) {
-              pendingFadeIn = false;
-              const remaining = fadeOutEndTime - Date.now();
-              const doFadeIn = () => {
-                const wrap = document.getElementById('player-wrap');
-                wrap.style.transition = `opacity ${videoFadeDuration}s ease`;
-                wrap.style.opacity = '1';
-              };
-              if (remaining > 0) setTimeout(doFadeIn, remaining); else doFadeIn();
-            }
-            scheduleVideoTimeout();
-          }
-
-          // State 2 = paused. Suspend the timeout – paused time shouldn't count.
-          if (e.data === 2) {
-            clearTimeout(videoTimeoutId);
-            videoTimeoutId = null;
-          }
-
-          // State 0 = ended. Advance to next video in the list (wraps to start).
-          if (e.data === 0) {
-            clearTimeout(videoTimeoutId);
-            videoTimeoutId = null;
-            if (videos.length > 1) {
-              currentVideoIndex = (currentVideoIndex + 1) % videos.length;
-              const nextVid = videos[currentVideoIndex];
-              const next = parseYouTube(nextVid.url);
-              if (!next) return;
-              if (next.listId) {
-                ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
-              } else if (next.videoId) {
-                ytPlayer.loadVideoById(nextVid.startAt > 0 ? { videoId: next.videoId, startSeconds: nextVid.startAt } : next.videoId);
-              }
-              if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
-              writeState();
-            }
-          }
-        },
-        onError: (e) => {
-          // Errors 100, 101, 150: video unavailable or embedding disabled.
-          // Skip to the next video rather than halting the show – a single blocked
-          // or deleted video shouldn't take down a multi-hour session.
-          if ((e.data === 100 || e.data === 101 || e.data === 150) && videos.length > 1) {
-            currentVideoIndex = (currentVideoIndex + 1) % videos.length;
-            const nextVid = videos[currentVideoIndex];
-            const next = parseYouTube(nextVid.url);
-            if (next) {
-              if (next.listId) ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
-              else if (next.videoId) ytPlayer.loadVideoById(nextVid.startAt > 0 ? { videoId: next.videoId, startSeconds: nextVid.startAt } : next.videoId);
-              if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
-              writeState();
-              return;
-            }
-          }
-          const msgs = {
-            2:   'Invalid video ID.',
-            5:   'HTML5 player error – the video may have restricted playback or an unsupported format.',
-            100: 'Video not found or private.',
-            101: 'Embedding disabled by owner.',
-            150: 'Embedding disabled by owner.',
-          };
-          showError('YouTube error ' + e.data + ': ' + (msgs[e.data] || 'Unknown error.'));
-        },
-      },
+      events: { onReady: handleReady, onStateChange: handleStateChange, onError: handleError },
     };
     if (first.videoId) cfg.videoId = first.videoId;
 
