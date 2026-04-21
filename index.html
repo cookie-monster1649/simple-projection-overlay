@@ -79,7 +79,9 @@
   .set-row:last-child { border-bottom: none; }
   .set-row:hover { background: #1a1a20; }
   .set-row--live { border-left: 3px solid #4caf82; }
-  .set-thumb { width: 56px; height: 32px; background: #000 center/contain no-repeat; border: 1px solid var(--line); border-radius: 2px; flex-shrink: 0; margin-top: 0.15rem; }
+  .set-thumb-col { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+  .set-time-badge { font-family: ui-monospace, monospace; font-size: 0.62rem; color: var(--muted); white-space: nowrap; overflow: hidden; max-width: 56px; line-height: 1; }
+  .set-thumb { width: 56px; height: 32px; background: #000 center/contain no-repeat; border: 1px solid var(--line); border-radius: 2px; flex-shrink: 0; }
   .set-meta { min-width: 0; }
   .set-name   { font-size: 0.92rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.25rem; }
   .set-detail { font-family: ui-monospace, monospace; font-size: 0.68rem; color: var(--muted); }
@@ -213,6 +215,7 @@
   .btn-paused { background: transparent; color: #f59e0b; border: 1px solid #f59e0b; }
   .btn-paused:hover { opacity: 0.8; }
   .paused-indicator { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #f59e0b; }
+  .live-clock { font-family: ui-monospace, monospace; font-size: 5rem; letter-spacing: 0.08em; color: var(--ink); margin-bottom: 0.75rem; line-height: 1; }
 
   [hidden] { display: none !important; }
 
@@ -271,9 +274,15 @@
     <h3 id="form-title">New set</h3>
 
     <!-- Set name – primary identity, sits outside any card -->
-    <div class="field form-name-field">
-      <label for="f-name">Set name</label>
-      <input type="text" id="f-name" placeholder="e.g. Sunday Service">
+    <div class="row">
+      <div class="field form-name-field">
+        <label for="f-name">Set name</label>
+        <input type="text" id="f-name" placeholder="e.g. Sunday Service">
+      </div>
+      <div class="field">
+        <label for="f-set-time">Time</label>
+        <input type="time" id="f-set-time">
+      </div>
     </div>
 
     <!-- ── Videos card ── -->
@@ -351,22 +360,6 @@
           </select>
         </div>
       </div>
-      <div class="field">
-        <label class="field-inline">
-          <input type="checkbox" id="f-bounce">
-          Bouncing mode – image moves around the screen like a DVD screensaver
-        </label>
-        <div class="row bounce-opts" id="bounce-opts" hidden>
-          <div class="field">
-            <label for="f-bounce-size">Image size (px)</label>
-            <input type="number" id="f-bounce-size" value="200" min="50" step="10">
-          </div>
-          <div class="field">
-            <label for="f-bounce-speed">Speed (px / second)</label>
-            <input type="number" id="f-bounce-speed" value="150" min="10" max="600" step="10">
-          </div>
-        </div>
-      </div>
     </div>
 
     <div class="form-actions">
@@ -408,12 +401,13 @@
 // Stores: 'workspace' (FileSystemDirectoryHandle), 'active' (active set config for player), 'sets' (fallback set storage)
 async function openAppDb() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('projector-app', 2);
+    const req = indexedDB.open('projector-app', 3);
     req.onupgradeneeded = e => {
       const db = e.target.result;
-      if (!db.objectStoreNames.contains('workspace')) db.createObjectStore('workspace');
-      if (!db.objectStoreNames.contains('active'))    db.createObjectStore('active');
-      if (!db.objectStoreNames.contains('sets'))      db.createObjectStore('sets');
+      if (!db.objectStoreNames.contains('workspace'))    db.createObjectStore('workspace');
+      if (!db.objectStoreNames.contains('active'))       db.createObjectStore('active');
+      if (!db.objectStoreNames.contains('sets'))         db.createObjectStore('sets');
+      if (!db.objectStoreNames.contains('localvideos'))  db.createObjectStore('localvideos');
     };
     req.onsuccess = e => resolve(e.target.result);
     req.onerror   = e => reject(e.target.error);
@@ -518,7 +512,7 @@ async function renderWorkspaceIndicator() {
 }
 
 // ── Storage ──
-// sets: [{ id, name, videos, images:[{imageDataUrl,duration}], interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed }]
+// sets: [{ id, name, videos, images:[{imageDataUrl,duration,size,position,effect,effectSpeed,bounce,bounceSpeed}], interval, fadeIn, fadeOut, easing, quality }]
 
 function applyMigrations(s) {
   if (!s.videos && s.url) s = { ...s, videos: [s.url] };
@@ -538,11 +532,17 @@ async function loadSets() {
         result.push(JSON.parse(text));
       } catch {}
     }
-    return result.map(applyMigrations);
+    const migrated = result.map(applyMigrations);
+    migrated.forEach((s, i) => { if (s._order == null) s._order = i; });
+    return migrated.sort((a, b) => a._order - b._order);
   }
   // IndexedDB fallback
   const idbSets = await idbGetAll('sets');
-  if (idbSets.length > 0) return idbSets.map(applyMigrations);
+  if (idbSets.length > 0) {
+    const migrated = idbSets.map(applyMigrations);
+    migrated.forEach((s, i) => { if (s._order == null) s._order = i; });
+    return migrated.sort((a, b) => a._order - b._order);
+  }
   // First run: migrate from localStorage into IndexedDB
   try {
     const lsSets = JSON.parse(localStorage.getItem('projector_sets') || '[]');
@@ -708,6 +708,7 @@ let playerWin    = null;   // reference to the open output window
 let activeSetId  = null;   // id of the set currently in the player
 let activePoll   = null;   // module-level poll handle (prevents duplicate intervals)
 let lastStateJson = null;  // last-seen projector_state string for change detection
+let liveClockInterval = null;
 
 // ── Render list ──
 function renderList() {
@@ -733,7 +734,10 @@ function renderList() {
         : `<button class="btn btn-launch btn-sm" onclick="launchSet('${s.id}')">Launch →</button>`;
     return `
     <div class="set-row${isLive ? ' set-row--live' : ''}">
-      <div class="set-thumb" style="background-image:url(${thumbUrl})"></div>
+      <div class="set-thumb-col">
+        ${s.setTime ? `<div class="set-time-badge">${esc(formatSetTime(s.setTime))}</div>` : ''}
+        <div class="set-thumb" style="background-image:url(${thumbUrl})"></div>
+      </div>
       <div class="set-meta">
         <div class="set-name">${esc(s.name)}</div>
         <div class="set-detail">
@@ -777,7 +781,7 @@ function renderDetailPanel() {
     formEl.hidden  = true;
     liveEl.hidden  = false;
     emptyEl.hidden = true;
-    if (set) liveEl.innerHTML = renderLivePanel(set, liveState);
+    if (set) { liveEl.innerHTML = renderLivePanel(set, liveState); startLiveClock(); }
     return;
   }
 
@@ -793,6 +797,14 @@ function esc(str) {
 
 function qualityLabel(q) {
   return { default:'auto', small:'240p', medium:'360p', large:'480p', hd720:'720p', hd1080:'1080p', hd1440:'1440p', hd2160:'4K' }[q] ?? 'auto';
+}
+
+function formatSetTime(t) {
+  if (!t) return '';
+  const [h, m] = t.split(':').map(Number);
+  const ampm = h < 12 ? 'AM' : 'PM';
+  const h12  = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
 }
 
 function shortUrl(url) {
@@ -836,6 +848,23 @@ function ytThumbUrl(url) {
   } catch { return null; }
 }
 
+function startLiveClock() {
+  if (liveClockInterval) cancelAnimationFrame(liveClockInterval);
+  let lastSec = -1;
+  function tick() {
+    const el = document.getElementById('live-clock');
+    if (!el) { liveClockInterval = null; return; }
+    const now = new Date();
+    const sec = now.getSeconds();
+    if (sec !== lastSec) {
+      lastSec = sec;
+      el.textContent = now.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    }
+    liveClockInterval = requestAnimationFrame(tick);
+  }
+  liveClockInterval = requestAnimationFrame(tick);
+}
+
 // Builds the expandable tile panel shown below a live set row.
 // state: { videoIndex, imageIndex } from projector_state, or null.
 function renderLivePanel(set, state) {
@@ -870,6 +899,7 @@ function renderLivePanel(set, state) {
     : `<button class="btn btn-ghost btn-sm" onclick="toggleOverlay()">⏸ Pause images</button>`;
 
   return `<div class="set-live-panel">
+    <div id="live-clock" class="live-clock"></div>
     <div class="live-controls">${pauseControl}</div>
     <p class="live-label">Videos</p>
     <div class="tile-row">${videoTiles}</div>
@@ -884,15 +914,12 @@ function openForm(set = null) {
 
   document.getElementById('form-title').textContent = set ? 'Edit set' : 'New set';
   document.getElementById('f-name').value           = set?.name     ?? '';
+  document.getElementById('f-set-time').value       = set?.setTime  ?? '';
   document.getElementById('f-interval').value       = set?.interval ?? 60;
   document.getElementById('f-fade-in').value        = set?.fadeIn   ?? 0.35;
   document.getElementById('f-fade-out').value         = set?.fadeOut  ?? 0.35;
   document.getElementById('f-easing').value      = set?.easing      ?? 'ease';
   document.getElementById('f-quality').value     = set?.quality     ?? 'default';
-  document.getElementById('f-bounce').checked      = set?.bounce       ?? false;
-  document.getElementById('f-bounce-size').value   = set?.bounceSize   ?? 200;
-  document.getElementById('f-bounce-speed').value  = set?.bounceSpeed  ?? 150;
-  document.getElementById('bounce-opts').hidden    = !(set?.bounce ?? false);
   document.getElementById('f-video-timeout').value = set?.videoTimeout ?? '';
   document.getElementById('f-video-fade').value    = set?.videoFadeDuration ?? 2;
   document.getElementById('form-error').textContent = '';
@@ -971,6 +998,14 @@ function renderImageInputs() {
           ${['slow','medium','fast'].map(s =>
             `<button type="button" class="speed-btn${(img.effectSpeed||'medium')===s?' active':''}" data-idx="${i}" data-speed="${s}">${s}</button>`
           ).join('')}
+        </div>
+        <label class="img-bounce-label">
+          <input type="checkbox" data-idx="${i}" data-kind="bounce"${img.bounce ? ' checked' : ''}>
+          Bounce
+        </label>
+        <div class="img-bounce-opts"${!img.bounce ? ' hidden' : ''}>
+          <input type="number" data-idx="${i}" data-kind="bounce-speed" value="${img.bounceSpeed ?? 150}" min="10" max="600" step="10" title="Speed (px/s)">
+          <span class="img-bounce-unit">px/s</span>
         </div>
       </div>
     </div>`;
@@ -1074,6 +1109,23 @@ function renderImageInputs() {
       e.target.closest('.fx-speed').querySelectorAll('.speed-btn').forEach(b => b.classList.toggle('active', b === e.target));
     });
   });
+
+  container.querySelectorAll('input[data-kind="bounce"]').forEach(cb => {
+    cb.addEventListener('change', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      formImages[idx].bounce = e.target.checked;
+      formDirty = true;
+      e.target.closest('.image-item-fx').querySelector('.img-bounce-opts').hidden = !e.target.checked;
+    });
+  });
+
+  container.querySelectorAll('input[data-kind="bounce-speed"]').forEach(input => {
+    input.addEventListener('input', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      formImages[idx].bounceSpeed = Math.max(10, parseInt(e.target.value, 10) || 150);
+      formDirty = true;
+    });
+  });
 }
 
 function moveImage(i, dir) {
@@ -1135,12 +1187,15 @@ function renderVideoInputs() {
   });
 
   container.querySelectorAll('input[data-kind="video-file"]').forEach(input => {
-    input.addEventListener('change', e => {
+    input.addEventListener('change', async e => {
       const idx = parseInt(e.target.dataset.idx);
       const file = e.target.files[0];
       if (!file) return;
       if (formVideos[idx].url?.startsWith('blob:')) URL.revokeObjectURL(formVideos[idx].url);
-      formVideos[idx].url = URL.createObjectURL(file);
+      const key = uid();
+      await idbPut('localvideos', new Blob([await file.arrayBuffer()], { type: file.type }), key);
+      formVideos[idx].url          = URL.createObjectURL(file); // live session URL for preview
+      formVideos[idx].localVideoKey = key;
       formVideos[idx].localFileName = file.name;
       formDirty = true;
       renderVideoInputs();
@@ -1166,6 +1221,7 @@ function clearLocalVideo(i) {
   if (formVideos[i].url?.startsWith('blob:')) URL.revokeObjectURL(formVideos[i].url);
   formVideos[i].url = '';
   delete formVideos[i].localFileName;
+  delete formVideos[i].localVideoKey;
   formDirty = true;
   renderVideoInputs();
 }
@@ -1189,15 +1245,20 @@ document.getElementById('save-btn').addEventListener('click', async () => {
   err.textContent = '';
 
   const name     = document.getElementById('f-name').value.trim();
-  const videos   = formVideos.map(v => ({ url: v.url.trim(), startAt: v.startAt || 0 })).filter(v => v.url);
+  const setTime  = document.getElementById('f-set-time').value;
+  const videos   = formVideos
+    .map(v => {
+      const entry = { url: (v.url || '').trim(), startAt: v.startAt || 0 };
+      if (v.localVideoKey) entry.localVideoKey = v.localVideoKey;
+      if (v.localFileName) entry.localFileName = v.localFileName;
+      return entry;
+    })
+    .filter(v => v.url || v.localVideoKey);
   const interval = Math.max(1,  parseInt(document.getElementById('f-interval').value, 10) || 60);
   const fadeIn   = Math.max(0, numOr(document.getElementById('f-fade-in').value,  0.35));
   const fadeOut  = Math.max(0, numOr(document.getElementById('f-fade-out').value, 0.35));
   const easing      = document.getElementById('f-easing').value  || 'ease';
   const quality     = document.getElementById('f-quality').value || 'default';
-  const bounce      = document.getElementById('f-bounce').checked;
-  const bounceSize  = Math.max(50,  parseInt(document.getElementById('f-bounce-size').value,  10) || 200);
-  const bounceSpeed = Math.max(10,  parseInt(document.getElementById('f-bounce-speed').value, 10) || 150);
   const videoTimeoutRaw  = parseInt(document.getElementById('f-video-timeout').value, 10);
   const videoTimeout     = Number.isFinite(videoTimeoutRaw) && videoTimeoutRaw > 0 ? videoTimeoutRaw : 0;
   const videoFadeDuration = Math.max(0.1, numOr(document.getElementById('f-video-fade').value, 2));
@@ -1211,17 +1272,19 @@ document.getElementById('save-btn').addEventListener('click', async () => {
       position:     img.position    || 'center center',
       effect:       img.effect      || 'none',
       effectSpeed:  img.effectSpeed || 'medium',
+      bounce:       img.bounce      ?? false,
+      bounceSpeed:  Math.max(10, img.bounceSpeed || 150),
     }));
 
   if (!name) { err.textContent = 'Please give this set a name.'; return; }
 
   let savedId;
   if (editingId) {
-    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout, videoFadeDuration } : s);
+    sets = sets.map(s => s.id === editingId ? { ...s, name, setTime, videos, images, interval, fadeIn, fadeOut, easing, quality, videoTimeout, videoFadeDuration } : s);
     savedId = editingId;
   } else {
     savedId = uid();
-    sets.push({ id: savedId, name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout, videoFadeDuration });
+    sets.push({ id: savedId, _order: sets.length, name, setTime, videos, images, interval, fadeIn, fadeOut, easing, quality, videoTimeout, videoFadeDuration });
   }
 
   await saveSet(sets.find(s => s.id === savedId));
@@ -1233,10 +1296,6 @@ document.getElementById('cancel-btn').addEventListener('click', maybeClose);
 document.getElementById('new-btn').addEventListener('click', () => openForm());
 document.getElementById('add-video-btn').addEventListener('click', addVideo);
 document.getElementById('add-image-btn').addEventListener('click', addImage);
-document.getElementById('f-bounce').addEventListener('change', (e) => {
-  document.getElementById('bounce-opts').hidden = !e.target.checked;
-});
-
 // Mark form dirty on any user input inside the panel
 document.getElementById('form-panel').addEventListener('input',  () => { formDirty = true; });
 document.getElementById('form-panel').addEventListener('change', () => { formDirty = true; });
@@ -1286,12 +1345,14 @@ document.getElementById('discard-discard').addEventListener('click', () => {
 document.getElementById('discard-cancel').addEventListener('click', hideDiscardModal);
 
 // ── Reorder ──
-function moveSet(id, direction) {
+async function moveSet(id, direction) {
   const i = sets.findIndex(s => s.id === id);
   const j = i + direction;
   if (j < 0 || j >= sets.length) return;
   [sets[i], sets[j]] = [sets[j], sets[i]];
-  saveSets(sets);
+  sets[i]._order = i;
+  sets[j]._order = j;
+  await Promise.all([saveSet(sets[i]), saveSet(sets[j])]);
   renderList();
 }
 
@@ -1304,6 +1365,8 @@ function editSet(id) {
 async function deleteSet(id) {
   const set = sets.find(s => s.id === id);
   if (!set || !confirm(`Delete "${set.name}"?`)) return;
+  for (const v of (set.videos || []))
+    if (v.localVideoKey) idbDelete('localvideos', v.localVideoKey).catch(() => {});
   sets = sets.filter(s => s.id !== id);
   await deleteSetFromStorage(id);
   renderList();
@@ -1321,9 +1384,20 @@ async function launchSet(id) {
   localStorage.removeItem('projector_state');
   localStorage.removeItem('projector_command');
 
+  // Resolve local video keys to fresh blob URLs for this session
+  const resolvedVideos = (await Promise.all((set.videos || []).map(async v => {
+    if (!v.localVideoKey) {
+      if (v.url?.startsWith('blob:')) return null; // stale blob from old format — skip
+      return v;
+    }
+    const blob = await idbGet('localvideos', v.localVideoKey);
+    if (!blob) return null; // file data missing
+    return { ...v, url: URL.createObjectURL(blob) };
+  }))).filter(Boolean);
+
   // Write active config to IndexedDB so player.html reads it fresh on load
   await idbPut('active', {
-    videos: set.videos, images: set.images,
+    videos: resolvedVideos, images: set.images,
     interval: set.interval,
     fadeIn:  set.fadeIn  ?? 0.35,
     fadeOut: set.fadeOut ?? 0.35,
@@ -1355,6 +1429,7 @@ async function launchSet(id) {
       lastStateJson = null;
       clearInterval(activePoll);
       activePoll = null;
+      if (liveClockInterval) { cancelAnimationFrame(liveClockInterval); liveClockInterval = null; }
       renderList();
       return;
     }

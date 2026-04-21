@@ -65,12 +65,13 @@
   // ── IndexedDB helpers (mirrors index.html) ──
   async function openAppDb() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('projector-app', 2);
+      const req = indexedDB.open('projector-app', 3);
       req.onupgradeneeded = e => {
         const db = e.target.result;
-        if (!db.objectStoreNames.contains('workspace')) db.createObjectStore('workspace');
-        if (!db.objectStoreNames.contains('active'))    db.createObjectStore('active');
-        if (!db.objectStoreNames.contains('sets'))      db.createObjectStore('sets');
+        if (!db.objectStoreNames.contains('workspace'))    db.createObjectStore('workspace');
+        if (!db.objectStoreNames.contains('active'))       db.createObjectStore('active');
+        if (!db.objectStoreNames.contains('sets'))         db.createObjectStore('sets');
+        if (!db.objectStoreNames.contains('localvideos'))  db.createObjectStore('localvideos');
       };
       req.onsuccess = e => resolve(e.target.result);
       req.onerror   = e => reject(e.target.error);
@@ -86,7 +87,7 @@
   }
 
   // ── Config from manager (loaded async from IndexedDB) ──
-  // { videos, images:[{imageDataUrl,duration}], interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed }
+  // { videos, images:[{imageDataUrl,duration,size,position,effect,effectSpeed,bounce,bounceSpeed}], interval, fadeIn, fadeOut, easing, quality }
   let config = null;
 
   // ── Module-level state ──
@@ -110,7 +111,8 @@
   let overlayIntervalMs  = 0;
   let overlayFadeOutMs   = 350;  // kept in sync with startOverlayLoop for use in pauseOverlay
   let overlayEasing      = 'ease';
-  let overlayBouncing    = false;
+  let bounceRafId        = null;
+  let currentImageBouncing = false;
   let overlayPaused      = false;
   let overlayFadeOutTimeoutId = null;
   let overlayHideTimeoutId    = null;
@@ -177,7 +179,7 @@
     if (!ytPlayer) showError('YouTube API failed to load. Check your internet connection and <a href="">reload this page</a>.');
   }, 8000);
 
-  function init({ videos, images, interval, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default', bounce = false, bounceSize = 200, bounceSpeed = 150, videoTimeout = 0 }) {
+  function init({ videos, images, interval, fadeIn = 0.35, fadeOut = 0.35, easing = 'ease', quality = 'default', videoTimeout = 0 }) {
     if (!images?.length) { showError('No images in this set.'); return; }
     document.getElementById('overlay').style.backgroundImage = `url(${images[0].imageDataUrl})`;
     setTimeout(() => document.getElementById('hint').remove(), 6000);
@@ -185,8 +187,12 @@
     if (!videos?.length) { showError('No videos in this set.'); return; }
     const firstUrl = typeof videos[0] === 'string' ? videos[0] : videos[0].url;
     const first = parseYouTube(firstUrl);
-    if (!first) { showError('Invalid YouTube URL in the saved set.'); return; }
-    buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout });
+    if (!first) {
+      let validUrl = false;
+      try { new URL(firstUrl?.trim() ?? ''); validUrl = true; } catch {}
+      if (!validUrl) { showError('Invalid video URL in the saved set.'); return; }
+    }
+    buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, videoTimeout });
   }
 
   function showError(html) {
@@ -249,7 +255,7 @@
     if (overlay.classList.contains('visible')) {
       overlay.style.transition = `opacity ${overlayFadeOutMs / 1000}s ${overlayEasing}`;
       overlay.classList.remove('visible');
-      if (!overlayBouncing) setTimeout(() => { overlay.style.display = 'none'; }, overlayFadeOutMs + 50);
+      if (!currentImageBouncing) setTimeout(() => { overlay.style.display = 'none'; }, overlayFadeOutMs + 50);
     }
     if (activeFx) hideFx(overlayFadeOutMs / 1000, overlayEasing);
     writeState();
@@ -343,7 +349,7 @@
   }
 
   // ── Player ──
-  function buildPlayer(rawVideos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout, videoFadeDuration = 2 }) {
+  function buildPlayer(rawVideos, { images, interval, fadeIn, fadeOut, easing, quality, videoTimeout, videoFadeDuration = 2 }) {
     const videos = rawVideos.map(v => typeof v === 'string' ? { url: v, startAt: 0 } : v);
     activeVideos = videos;
     activeImages = images;
@@ -376,8 +382,7 @@
       playerInitialised = true;
       e.target.playVideo();
       if (quality !== 'default') e.target.setPlaybackQuality(quality);
-      if (bounce) startBounce(bounceSize, bounceSpeed);
-      startOverlayLoop(interval, images, fadeIn, fadeOut, easing, bounce);
+      startOverlayLoop(interval, images, fadeIn, fadeOut, easing);
       writeState();
       if (pendingSeek) {
         const { index, startSeconds } = pendingSeek;
@@ -709,49 +714,59 @@
   }
 
   // ── Overlay loop ──
-  function startOverlayLoop(intervalSec, images, fadeIn, fadeOut, easing, bouncing) {
+  function startOverlayLoop(intervalSec, images, fadeIn, fadeOut, easing) {
     const overlay   = document.getElementById('overlay');
     const fadeOutMs = Math.round(fadeOut * 1000);
     overlayIntervalMs = intervalSec * 1000;
-    overlayFadeOutMs  = fadeOutMs;   // kept in sync so pauseOverlay can use them
+    overlayFadeOutMs  = fadeOutMs;
     overlayEasing     = easing;
-    overlayBouncing   = bouncing;
-
-    // In bounce mode the element stays in the DOM; only opacity is toggled
-    if (bouncing) overlay.style.display = 'block';
 
     const show = () => {
       const img = images[currentImageIndex];
-      // Write state before incrementing so manager sees the index of what's on screen
       writeState();
       currentImageIndex = (currentImageIndex + 1) % images.length;
 
-      // Effects are disabled in bounce mode (the CSS overlay handles positioning there)
-      const hasEffect = typeof PIXI !== 'undefined' && img.effect && img.effect !== 'none' && !bouncing;
+      stopBounce();
+      clearTimeout(overlayFadeOutTimeoutId);
+      clearTimeout(overlayHideTimeoutId);
+      overlayFadeOutTimeoutId = null;
+      overlayHideTimeoutId    = null;
 
-      if (hasEffect) {
-        showFx(img, fadeIn, easing);
-        setTimeout(() => hideFx(fadeOut, easing), img.duration * 1000);
-      } else {
-        clearTimeout(overlayFadeOutTimeoutId);
-        clearTimeout(overlayHideTimeoutId);
-        overlayFadeOutTimeoutId = null;
-        overlayHideTimeoutId    = null;
-
-        overlay.style.backgroundImage    = `url(${img.imageDataUrl})`;
-        overlay.style.backgroundSize     = img.size ? `${img.size}%` : '80%';
-        overlay.style.backgroundPosition = img.position || 'center';
-
-        if (!bouncing) overlay.style.display = 'block';
+      if (img.bounce) {
+        currentImageBouncing = true;
+        overlay.style.display = 'block';
         overlay.style.transition = `opacity ${fadeIn}s ${easing}`;
-        void overlay.offsetWidth; // force reflow so transition fires from opacity:0
+        void overlay.offsetWidth;
         overlay.classList.add('visible');
-
+        startBounce(img);
         overlayFadeOutTimeoutId = setTimeout(() => {
           overlay.style.transition = `opacity ${fadeOut}s ${easing}`;
           overlay.classList.remove('visible');
-          if (!bouncing) overlayHideTimeoutId = setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
+          overlayHideTimeoutId = setTimeout(() => {
+            stopBounce();
+            overlay.style.display = 'none';
+          }, fadeOutMs + 50);
         }, img.duration * 1000);
+      } else {
+        currentImageBouncing = false;
+        const hasEffect = typeof PIXI !== 'undefined' && img.effect && img.effect !== 'none';
+        if (hasEffect) {
+          showFx(img, fadeIn, easing);
+          setTimeout(() => hideFx(fadeOut, easing), img.duration * 1000);
+        } else {
+          overlay.style.backgroundImage    = `url(${img.imageDataUrl})`;
+          overlay.style.backgroundSize     = img.size ? `${img.size}%` : '80%';
+          overlay.style.backgroundPosition = img.position || 'center';
+          overlay.style.display = 'block';
+          overlay.style.transition = `opacity ${fadeIn}s ${easing}`;
+          void overlay.offsetWidth;
+          overlay.classList.add('visible');
+          overlayFadeOutTimeoutId = setTimeout(() => {
+            overlay.style.transition = `opacity ${fadeOut}s ${easing}`;
+            overlay.classList.remove('visible');
+            overlayHideTimeoutId = setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
+          }, img.duration * 1000);
+        }
       }
     };
 
@@ -762,40 +777,47 @@
   }
 
   // ── Bounce animation ──
-  function startBounce(sizePx, speedPxPerSec) {
+  function stopBounce() {
+    if (bounceRafId) { cancelAnimationFrame(bounceRafId); bounceRafId = null; }
+    const overlay = document.getElementById('overlay');
+    overlay.classList.remove('bouncing');
+    overlay.style.left = '';
+    overlay.style.top  = '';
+    overlay.style.width  = '';
+    overlay.style.height = '';
+  }
+
+  function startBounce(img) {
+    const sizePx = Math.round(Math.min(window.innerWidth, window.innerHeight) * (img.size ?? 80) / 100);
+    const speedPxPerSec = img.bounceSpeed ?? 150;
     const overlay = document.getElementById('overlay');
     overlay.classList.add('bouncing');
+    overlay.style.backgroundImage    = `url(${img.imageDataUrl})`;
+    overlay.style.backgroundSize     = 'contain';
+    overlay.style.backgroundPosition = 'center';
     overlay.style.width  = sizePx + 'px';
     overlay.style.height = sizePx + 'px';
 
-    // Start at a random position with a non-axis-aligned angle (avoids boring straight paths)
     let x  = Math.random() * (window.innerWidth  - sizePx);
     let y  = Math.random() * (window.innerHeight - sizePx);
-    const angle = (20 + Math.random() * 70) * (Math.PI / 180); // 20–90°
-    let vx = speedPxPerSec * Math.cos(angle) * (Math.random() > 0.5 ? 1 : -1);
-    let vy = speedPxPerSec * Math.sin(angle) * (Math.random() > 0.5 ? 1 : -1);
-
+    let vx = speedPxPerSec * (Math.random() > 0.5 ? 1 : -1);
+    let vy = speedPxPerSec * (Math.random() > 0.5 ? 1 : -1);
     let lastTime = null;
 
     function frame(timestamp) {
-      const dt = lastTime === null ? 0 : (timestamp - lastTime) / 1000; // seconds
+      const dt = lastTime === null ? 0 : (timestamp - lastTime) / 1000;
       lastTime = timestamp;
-
       x += vx * dt;
       y += vy * dt;
-
-      // Reflect off edges
       if (x + sizePx >= window.innerWidth)  { x = window.innerWidth  - sizePx; vx = -Math.abs(vx); }
       if (x <= 0)                            { x = 0;                           vx =  Math.abs(vx); }
       if (y + sizePx >= window.innerHeight) { y = window.innerHeight - sizePx; vy = -Math.abs(vy); }
       if (y <= 0)                            { y = 0;                           vy =  Math.abs(vy); }
-
       overlay.style.left = x + 'px';
       overlay.style.top  = y + 'px';
-      requestAnimationFrame(frame);
+      bounceRafId = requestAnimationFrame(frame);
     }
-
-    requestAnimationFrame(frame);
+    bounceRafId = requestAnimationFrame(frame);
   }
 
   // ── Keyboard ──
