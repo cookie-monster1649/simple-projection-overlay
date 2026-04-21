@@ -12,7 +12,7 @@
   /* ── Cover-crop container ──
      JS sizes #player-wrap so the video fills the full viewport height (or width),
      overflow: hidden on #stage clips the bleed. */
-  #player-wrap { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); opacity: 1; transition: opacity 0.6s ease; }
+  #player-wrap { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); opacity: 1; }
   #player      { display: block; width: 100%; height: 100%; }
 
   #overlay {
@@ -81,6 +81,7 @@
 
   let videoTimeoutId    = null; // handle for the per-video max-duration timer
   let pendingFadeIn     = false; // true while waiting for the next video to start so we can fade the player back in
+  let fadeOutEndTime    = 0;    // timestamp (ms) when the current player fade-out will be complete
 
   let currentImageIndex  = 0;
   let activeImages       = []; // mirrors images array for bounds-checking seek commands
@@ -91,6 +92,8 @@
   let overlayEasing      = 'ease';
   let overlayBouncing    = false;
   let overlayPaused      = false;
+  let overlayFadeOutTimeoutId = null;
+  let overlayHideTimeoutId    = null;
 
   let pixiApp  = null; // PIXI.Application singleton, created lazily
   let activeFx = null; // { stop } handle for the current running effect
@@ -160,7 +163,8 @@
     setTimeout(() => document.getElementById('hint').remove(), 6000);
 
     if (!videos?.length) { showError('No videos in this set.'); return; }
-    const first = parseYouTube(videos[0]);
+    const firstUrl = typeof videos[0] === 'string' ? videos[0] : videos[0].url;
+    const first = parseYouTube(firstUrl);
     if (!first) { showError('Invalid YouTube URL in the saved set.'); return; }
     buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout });
   }
@@ -199,14 +203,16 @@
     if (!activeVideos[index]) return;
     // Queue if ytPlayer hasn't been created yet (YT API still loading) or if onReady hasn't fired
     if (!ytPlayer || !playerReady) { pendingSeek = { index, startSeconds }; return; }
-    const parsed = parseYouTube(activeVideos[index]);
+    const video = activeVideos[index];
+    const parsed = parseYouTube(video.url);
     if (!parsed) return;
     currentVideoIndex = index;
+    // startSeconds from the stall watchdog (resume in-place) takes priority over the configured startAt
+    const effectiveStart = startSeconds > 0 ? startSeconds : (video.startAt || 0);
     if (parsed.listId) {
       ytPlayer.loadPlaylist({ list: parsed.listId, listType: 'playlist' });
     } else if (parsed.videoId) {
-      // startSeconds is only passed by the stall watchdog so recovery resumes in-place
-      ytPlayer.loadVideoById(startSeconds > 0 ? { videoId: parsed.videoId, startSeconds } : parsed.videoId);
+      ytPlayer.loadVideoById(effectiveStart > 0 ? { videoId: parsed.videoId, startSeconds: effectiveStart } : parsed.videoId);
     }
     if (config.quality !== 'default') ytPlayer.setPlaybackQuality(config.quality);
     writeState();
@@ -278,10 +284,12 @@
   }
 
   // ── Player ──
-  function buildPlayer(videos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout }) {
+  function buildPlayer(rawVideos, { images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout, videoFadeDuration = 2 }) {
+    // Normalise to { url, startAt } objects for backward compat with old string-only format
+    const videos = rawVideos.map(v => typeof v === 'string' ? { url: v, startAt: 0 } : v);
     activeVideos = videos;  // expose for seek commands
     activeImages = images;  // expose for bounds-checking in seekImage
-    const first = parseYouTube(videos[0]);
+    const first = parseYouTube(videos[0].url);
     let stallTimer = null; // tracks buffering/unstarted watchdog
 
     // ── Video timeout helpers ──
@@ -294,20 +302,24 @@
     }
 
     // Fades out the player, loads the next video, then waits for it to start
-    // before fading back in. pendingFadeIn is read in the onStateChange handler.
+    // playing AND for the fade-out to finish before fading back in.
     // Example: 4 videos at 120 s timeout → each fades at 2:00 regardless of length.
     function timeoutAdvance() {
       clearTimeout(videoTimeoutId);
       videoTimeoutId = null;
-      document.getElementById('player-wrap').style.opacity = '0';
+      const wrap = document.getElementById('player-wrap');
+      wrap.style.transition = `opacity ${videoFadeDuration}s ease`;
+      wrap.style.opacity = '0';
       pendingFadeIn = true;
+      fadeOutEndTime = Date.now() + videoFadeDuration * 1000;
       currentVideoIndex = (currentVideoIndex + 1) % videos.length;
-      const next = parseYouTube(videos[currentVideoIndex]);
+      const nextVid = videos[currentVideoIndex];
+      const next = parseYouTube(nextVid.url);
       if (!next) return;
       if (next.listId) {
         ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
       } else if (next.videoId) {
-        ytPlayer.loadVideoById(next.videoId);
+        ytPlayer.loadVideoById(nextVid.startAt > 0 ? { videoId: next.videoId, startSeconds: nextVid.startAt } : next.videoId);
       }
       if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
       writeState();
@@ -319,6 +331,7 @@
       origin: window.location.origin,
     };
     if (first.listId) { playerVars.listType = 'playlist'; playerVars.list = first.listId; }
+    if (videos[0].startAt > 0) playerVars.start = videos[0].startAt;
 
     const cfg = {
       width: '100%', height: '100%',
@@ -358,11 +371,17 @@
             stallTimer = setTimeout(() => seekVideo(currentVideoIndex, resumeAt), 30000);
           }
 
-          // State 1 = playing. Fade in if we were mid-crossfade, then arm the timeout.
+          // State 1 = playing. Fade in once the fade-out is also complete, then arm the timeout.
           if (e.data === 1) {
             if (pendingFadeIn) {
               pendingFadeIn = false;
-              document.getElementById('player-wrap').style.opacity = '1';
+              const remaining = fadeOutEndTime - Date.now();
+              const doFadeIn = () => {
+                const wrap = document.getElementById('player-wrap');
+                wrap.style.transition = `opacity ${videoFadeDuration}s ease`;
+                wrap.style.opacity = '1';
+              };
+              if (remaining > 0) setTimeout(doFadeIn, remaining); else doFadeIn();
             }
             scheduleVideoTimeout();
           }
@@ -379,12 +398,13 @@
             videoTimeoutId = null;
             if (videos.length > 1) {
               currentVideoIndex = (currentVideoIndex + 1) % videos.length;
-              const next = parseYouTube(videos[currentVideoIndex]);
+              const nextVid = videos[currentVideoIndex];
+              const next = parseYouTube(nextVid.url);
               if (!next) return;
               if (next.listId) {
                 ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
               } else if (next.videoId) {
-                ytPlayer.loadVideoById(next.videoId);
+                ytPlayer.loadVideoById(nextVid.startAt > 0 ? { videoId: next.videoId, startSeconds: nextVid.startAt } : next.videoId);
               }
               if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
               writeState();
@@ -397,10 +417,11 @@
           // or deleted video shouldn't take down a multi-hour session.
           if ((e.data === 100 || e.data === 101 || e.data === 150) && videos.length > 1) {
             currentVideoIndex = (currentVideoIndex + 1) % videos.length;
-            const next = parseYouTube(videos[currentVideoIndex]);
+            const nextVid = videos[currentVideoIndex];
+            const next = parseYouTube(nextVid.url);
             if (next) {
               if (next.listId) ytPlayer.loadPlaylist({ list: next.listId, listType: 'playlist' });
-              else if (next.videoId) ytPlayer.loadVideoById(next.videoId);
+              else if (next.videoId) ytPlayer.loadVideoById(nextVid.startAt > 0 ? { videoId: next.videoId, startSeconds: nextVid.startAt } : next.videoId);
               if (quality !== 'default') ytPlayer.setPlaybackQuality(quality);
               writeState();
               return;
@@ -690,6 +711,11 @@
         showFx(img, fadeIn, easing);
         setTimeout(() => hideFx(fadeOut, easing), img.duration * 1000);
       } else {
+        clearTimeout(overlayFadeOutTimeoutId);
+        clearTimeout(overlayHideTimeoutId);
+        overlayFadeOutTimeoutId = null;
+        overlayHideTimeoutId    = null;
+
         overlay.style.backgroundImage    = `url(${img.imageDataUrl})`;
         overlay.style.backgroundSize     = img.size ? `${img.size}%` : '80%';
         overlay.style.backgroundPosition = img.position || 'center';
@@ -699,10 +725,10 @@
         void overlay.offsetWidth; // force reflow so transition fires from opacity:0
         overlay.classList.add('visible');
 
-        setTimeout(() => {
+        overlayFadeOutTimeoutId = setTimeout(() => {
           overlay.style.transition = `opacity ${fadeOut}s ${easing}`;
           overlay.classList.remove('visible');
-          if (!bouncing) setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
+          if (!bouncing) overlayHideTimeoutId = setTimeout(() => { overlay.style.display = 'none'; }, fadeOutMs + 50);
         }, img.duration * 1000);
       }
     };

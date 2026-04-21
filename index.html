@@ -158,11 +158,17 @@
 
   /* ── Video list ── */
   .video-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.6rem; }
-  .video-item { display: flex; align-items: center; gap: 0.6rem; }
+  .video-item { display: flex; flex-direction: column; gap: 0.4rem; }
+  .video-item-row { display: flex; align-items: center; gap: 0.6rem; }
   .video-num  { font-family: ui-monospace, monospace; font-size: 0.68rem; color: var(--muted); width: 1.2rem; flex-shrink: 0; text-align: right; }
-  .video-item input[type="text"] { flex: 1; width: auto; }
+  .video-item-row input[type="text"] { flex: 1; width: auto; }
   .remove-video { background: transparent; border: none; color: var(--muted); font-size: 1.1rem; line-height: 1; padding: 0 0.25rem; cursor: pointer; flex-shrink: 0; }
   .remove-video:hover { color: var(--danger); }
+  .move-video { background: transparent; border: none; color: var(--muted); font-size: 0.85rem; line-height: 1; padding: 0 0.2rem; cursor: pointer; flex-shrink: 0; }
+  .move-video:hover:not(:disabled) { color: var(--ink); }
+  .move-video:disabled { opacity: 0.25; cursor: default; }
+  .video-start-time { width: 4.5rem; font-family: ui-monospace, monospace; font-size: 0.8rem; flex-shrink: 0; text-align: center; }
+  .yt-thumb { width: 100%; aspect-ratio: 16/9; max-height: 120px; object-fit: cover; border-radius: 2px; border: 1px solid var(--line); background: #111; }
 
   /* ── Live media panel ── */
   .set-live-panel { background: #0e0e12; border-bottom: 1px solid var(--line); padding: 0.65rem 1.25rem 0.85rem; }
@@ -258,6 +264,11 @@
           <label for="f-video-timeout">Max video duration (seconds)</label>
           <input type="number" id="f-video-timeout" min="1" step="1" placeholder="No limit">
           <div class="hint">Fades to next video early. Leave blank for no limit.</div>
+        </div>
+        <div class="field">
+          <label for="f-video-fade">Video transition (seconds)</label>
+          <input type="number" id="f-video-fade" value="2" min="0.1" step="0.5">
+          <div class="hint">Fade duration when switching videos.</div>
         </div>
         <div class="field">
           <label for="f-quality">Video quality</label>
@@ -366,6 +377,8 @@ function loadSets() {
       if (!s.videos && s.url) s = { ...s, videos: [s.url] };
       // Migrate single imageDataUrl + duration → images array
       if (!s.images && s.imageDataUrl) s = { ...s, images: [{ imageDataUrl: s.imageDataUrl, duration: s.duration ?? 5 }] };
+      // Migrate videos from strings to { url, startAt } objects
+      if (Array.isArray(s.videos)) s = { ...s, videos: s.videos.map(v => typeof v === 'string' ? { url: v, startAt: 0 } : v) };
       return s;
     });
   } catch { return []; }
@@ -385,7 +398,7 @@ function numOr(val, fallback) { const n = parseFloat(val); return Number.isFinit
 // ── State ──
 let sets = loadSets();
 let editingId  = null;  // null = new set, string = editing existing
-let formVideos = [''];  // video URLs being edited in the current form session
+let formVideos = [{ url: '', startAt: 0 }];  // video entries being edited in the current form session
 let formImages = [{ imageDataUrl: null, duration: 5 }]; // images being edited in the current form session
 let formDirty  = false; // true once the user has changed anything in the open form
 let playerWin    = null;   // reference to the open output window
@@ -409,7 +422,7 @@ function renderList() {
     const isLive    = windowOpen && s.id === activeSetId;
     const thumbUrl  = s.images?.[0]?.imageDataUrl || '';
     const hasVideo   = s.videos?.length > 0;
-    const videoDesc  = !hasVideo ? 'no video' : s.videos.length === 1 ? esc(shortUrl(s.videos[0])) : `${s.videos.length} videos`;
+    const videoDesc  = !hasVideo ? 'no video' : s.videos.length === 1 ? esc(shortUrl(s.videos[0].url)) : `${s.videos.length} videos`;
     const imgDesc   = s.images?.length === 1 ? '1 image' : `${s.images?.length ?? 0} images`;
     const launchBtn = isLive
       ? `<button class="btn btn-live btn-sm" disabled>● Live</button>`
@@ -457,6 +470,21 @@ function shortUrl(url) {
 }
 
 // Returns a YouTube thumbnail URL if the video ID can be parsed, otherwise null.
+function parseStartTime(str) {
+  if (!str || !str.trim()) return 0;
+  const parts = str.trim().split(':').map(s => parseInt(s, 10) || 0);
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] * 3600 + parts[1] * 60 + parts[2];
+}
+
+function fmtTime(sec) {
+  if (!sec) return '';
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 function ytThumbUrl(url) {
   try {
     const u    = new URL(url.trim());
@@ -481,12 +509,12 @@ function renderLivePanel(set, state) {
   const imageIdx = state?.imageIndex ?? 0;
   const isPaused = state?.overlayPaused ?? false;
 
-  const videoTiles = (set.videos || []).map((url, i) => {
-    const thumb  = ytThumbUrl(url);
+  const videoTiles = (set.videos || []).map((v, i) => {
+    const thumb  = ytThumbUrl(v.url);
     const active = i === videoIdx;
     const bg     = thumb ? `background-image:url(${thumb})` : '';
     return `<div class="media-tile media-tile--video${active ? ' media-tile--active' : ''}"
-        style="${bg}" onclick="seekMedia('video',${i})" title="${esc(url)}">
+        style="${bg}" onclick="seekMedia('video',${i})" title="${esc(v.url)}">
         <span class="tile-num">${i + 1}</span>
         ${active ? '<div class="tile-active-pip"></div>' : ''}
       </div>`;
@@ -532,8 +560,11 @@ function openForm(set = null) {
   document.getElementById('f-bounce-speed').value  = set?.bounceSpeed  ?? 150;
   document.getElementById('bounce-opts').hidden    = !(set?.bounce ?? false);
   document.getElementById('f-video-timeout').value = set?.videoTimeout ?? '';
+  document.getElementById('f-video-fade').value    = set?.videoFadeDuration ?? 2;
   document.getElementById('form-error').textContent = '';
-  formVideos = set?.videos?.length ? [...set.videos] : [''];
+  formVideos = set?.videos?.length
+    ? set.videos.map(v => typeof v === 'string' ? { url: v, startAt: 0 } : { ...v })
+    : [{ url: '', startAt: 0 }];
   formImages = set?.images?.length ? set.images.map(img => ({ ...img })) : [{ imageDataUrl: null, duration: 5 }];
   renderVideoInputs();
   renderImageInputs();
@@ -548,7 +579,7 @@ function closeForm() {
   document.getElementById('form-panel').classList.remove('is-open');
   document.getElementById('slideover-backdrop').classList.remove('is-open');
   editingId  = null;
-  formVideos = [''];
+  formVideos = [{ url: '', startAt: 0 }];
   formImages = [{ imageDataUrl: null, duration: 5 }];
   formDirty  = false;
 }
@@ -729,29 +760,59 @@ function removeImage(i) {
 // ── Video list UI ──
 function renderVideoInputs() {
   const container = document.getElementById('f-videos');
-  container.innerHTML = formVideos.map((url, i) => `
+  container.innerHTML = formVideos.map((v, i) => {
+    const thumb = ytThumbUrl(v.url);
+    const moveButtons = formVideos.length > 1 ? `
+      <button type="button" class="move-video" onclick="moveVideo(${i},-1)" ${i === 0 ? 'disabled' : ''} title="Move up">↑</button>
+      <button type="button" class="move-video" onclick="moveVideo(${i}, 1)" ${i === formVideos.length - 1 ? 'disabled' : ''} title="Move down">↓</button>
+      <button type="button" class="remove-video" onclick="removeVideo(${i})" title="Remove">×</button>` : '<span style="width:1.4rem"></span>';
+    return `
     <div class="video-item">
-      <span class="video-num">${i + 1}.</span>
-      <input type="text" data-idx="${i}" value="${esc(url)}" placeholder="https://www.youtube.com/watch?v=...">
-      ${formVideos.length > 1
-        ? `<button type="button" class="remove-video" onclick="removeVideo(${i})" title="Remove">×</button>`
-        : '<span style="width:1.4rem"></span>'}
-    </div>`).join('');
+      <div class="video-item-row">
+        <span class="video-num">${i + 1}.</span>
+        <input type="text" data-idx="${i}" data-kind="url" value="${esc(v.url)}" placeholder="https://www.youtube.com/watch?v=...">
+        <input type="text" class="video-start-time" data-idx="${i}" data-kind="startAt"
+          value="${fmtTime(v.startAt)}" placeholder="0:00" title="Start time (m:ss)">
+        ${moveButtons}
+      </div>
+      <img class="yt-thumb" data-idx="${i}" src="${thumb || ''}" alt="YouTube thumbnail"
+        style="${thumb ? '' : 'display:none'}"
+        onerror="this.style.display='none'" onload="this.style.display=''">
+    </div>`;
+  }).join('');
 
-  // Sync input changes back into formVideos
-  container.querySelectorAll('input[type="text"]').forEach(input => {
+  container.querySelectorAll('input[data-kind="url"]').forEach(input => {
     input.addEventListener('input', e => {
-      formVideos[parseInt(e.target.dataset.idx)] = e.target.value;
+      const idx = parseInt(e.target.dataset.idx);
+      formVideos[idx].url = e.target.value;
+      const img = container.querySelector(`img.yt-thumb[data-idx="${idx}"]`);
+      if (!img) return;
+      const thumbUrl = ytThumbUrl(e.target.value);
+      if (thumbUrl) { img.src = thumbUrl; } else { img.src = ''; img.style.display = 'none'; }
+    });
+  });
+
+  container.querySelectorAll('input[data-kind="startAt"]').forEach(input => {
+    input.addEventListener('change', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      formVideos[idx].startAt = parseStartTime(e.target.value);
+      e.target.value = fmtTime(formVideos[idx].startAt);
     });
   });
 }
 
 function addVideo() {
-  formVideos.push('');
+  formVideos.push({ url: '', startAt: 0 });
   renderVideoInputs();
-  // Focus the new empty input
-  const inputs = document.getElementById('f-videos').querySelectorAll('input');
-  inputs[inputs.length - 1]?.focus();
+  document.getElementById('f-videos').querySelectorAll('input[data-kind="url"]')[formVideos.length - 1]?.focus();
+}
+
+function moveVideo(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= formVideos.length) return;
+  [formVideos[i], formVideos[j]] = [formVideos[j], formVideos[i]];
+  formDirty = true;
+  renderVideoInputs();
 }
 
 function removeVideo(i) {
@@ -765,7 +826,7 @@ document.getElementById('save-btn').addEventListener('click', () => {
   err.textContent = '';
 
   const name     = document.getElementById('f-name').value.trim();
-  const videos   = formVideos.map(u => u.trim()).filter(Boolean);
+  const videos   = formVideos.map(v => ({ url: v.url.trim(), startAt: v.startAt || 0 })).filter(v => v.url);
   const interval = Math.max(1,  parseInt(document.getElementById('f-interval').value, 10) || 60);
   const fadeIn   = Math.max(0, numOr(document.getElementById('f-fade-in').value,  0.35));
   const fadeOut  = Math.max(0, numOr(document.getElementById('f-fade-out').value, 0.35));
@@ -774,8 +835,9 @@ document.getElementById('save-btn').addEventListener('click', () => {
   const bounce      = document.getElementById('f-bounce').checked;
   const bounceSize  = Math.max(50,  parseInt(document.getElementById('f-bounce-size').value,  10) || 200);
   const bounceSpeed = Math.max(10,  parseInt(document.getElementById('f-bounce-speed').value, 10) || 150);
-  const videoTimeoutRaw = parseInt(document.getElementById('f-video-timeout').value, 10);
-  const videoTimeout    = Number.isFinite(videoTimeoutRaw) && videoTimeoutRaw > 0 ? videoTimeoutRaw : 0;
+  const videoTimeoutRaw  = parseInt(document.getElementById('f-video-timeout').value, 10);
+  const videoTimeout     = Number.isFinite(videoTimeoutRaw) && videoTimeoutRaw > 0 ? videoTimeoutRaw : 0;
+  const videoFadeDuration = Math.max(0.1, numOr(document.getElementById('f-video-fade').value, 2));
 
   const images = formImages
     .filter(img => img.imageDataUrl)
@@ -791,9 +853,9 @@ document.getElementById('save-btn').addEventListener('click', () => {
   if (!name) { err.textContent = 'Please give this set a name.'; return; }
 
   if (editingId) {
-    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout } : s);
+    sets = sets.map(s => s.id === editingId ? { ...s, name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout, videoFadeDuration } : s);
   } else {
-    sets.push({ id: uid(), name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout });
+    sets.push({ id: uid(), name, videos, images, interval, fadeIn, fadeOut, easing, quality, bounce, bounceSize, bounceSpeed, videoTimeout, videoFadeDuration });
   }
 
   saveSets(sets);
@@ -883,7 +945,8 @@ function launchSet(id) {
       bounce:      set.bounce      ?? false,
       bounceSize:  set.bounceSize  ?? 200,
       bounceSpeed:   set.bounceSpeed  ?? 150,
-      videoTimeout:  set.videoTimeout ?? 0,
+      videoTimeout:      set.videoTimeout      ?? 0,
+      videoFadeDuration: set.videoFadeDuration ?? 2,
     }));
   } catch (e) {
     alert('Failed to write set config to browser storage – images may be too large. Free up storage and try again.');
