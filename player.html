@@ -138,6 +138,7 @@
     applyCoverCrop();
     reportResolution();
     if (pixiApp) pixiApp.renderer.resize(window.innerWidth, window.innerHeight);
+    if (activeFx?.sprite) layoutSprite(activeFx.sprite, activeFx.img, activeFx.texture);
   });
 
   if (!config) {
@@ -458,6 +459,19 @@
     canvas.style.display = 'none';
   }
 
+  function layoutSprite(sprite, img, texture) {
+    const vpW = window.innerWidth;
+    const vpH = window.innerHeight;
+    const pct = img.size ?? 80;
+    const w   = vpW * pct / 100;
+    const h   = w * (texture.height / texture.width);
+    const [hPos, vPos] = (img.position || 'center center').split(' ');
+    sprite.x      = hPos === 'left'  ? 0 : hPos === 'right'  ? vpW - w : (vpW - w) / 2;
+    sprite.y      = vPos === 'top'   ? 0 : vPos === 'bottom' ? vpH - h : (vpH - h) / 2;
+    sprite.width  = w;
+    sprite.height = h;
+  }
+
   function showFx(img, fadeInSec, easing) {
     initPixi();
     stopFx();
@@ -472,17 +486,7 @@
       console.log('[FX DEBUG] texture size:', texture.width, 'x', texture.height);
       console.log('[FX DEBUG] applying effect:', img.effect, 'speed:', img.effectSpeed);
 
-      // Match the CSS background-size / background-position behaviour
-      const vpW = window.innerWidth;
-      const vpH = window.innerHeight;
-      const pct = img.size ?? 80;
-      const w   = vpW * pct / 100;
-      const h   = w * (texture.height / texture.width);
-      const [hPos, vPos] = (img.position || 'center center').split(' ');
-      sprite.x = hPos === 'left'  ? 0 : hPos === 'right'  ? vpW - w : (vpW - w) / 2;
-      sprite.y = vPos === 'top'   ? 0 : vPos === 'bottom' ? vpH - h : (vpH - h) / 2;
-      sprite.width  = w;
-      sprite.height = h;
+      layoutSprite(sprite, img, texture);
 
       const { filter, tickFn } = makeFxFilter(img.effect, img.effectSpeed);
 
@@ -516,7 +520,7 @@
         console.log('[FX DEBUG] corner pixel (0,0) after first render: rgba(' + px[0]+','+px[1]+','+px[2]+','+px[3]+')');
         console.log('[FX DEBUG] (expect 0,0,0,0=transparent; 0,0,0,255=opaque black=bug)');
         // Also sample a pixel in the centre of the sprite where it should be opaque
-        const cx = Math.round(vpW / 2), cy = Math.round(vpH / 2);
+        const cx = Math.round(window.innerWidth / 2), cy = Math.round(window.innerHeight / 2);
         gl.readPixels(cx, cy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
         console.log('[FX DEBUG] centre pixel ('+cx+','+cy+'): rgba('+px[0]+','+px[1]+','+px[2]+','+px[3]+')');
       };
@@ -526,6 +530,7 @@
       pixiApp.ticker.start();
 
       activeFx = {
+        sprite, img, texture,
         stop: () => {
           pixiApp.ticker.remove(tickFn);
           if (sprite.filters) sprite.filters = [];
