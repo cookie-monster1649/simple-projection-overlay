@@ -184,6 +184,7 @@
         videoIndex: currentVideoIndex,
         imageIndex: currentImageIndex,
         overlayPaused,
+
       }));
     } catch { /* non-fatal – manager will hold its last-known state */ }
   }
@@ -481,16 +482,21 @@
   }
 
   function layoutSprite(sprite, img, texture) {
-    const vpW = window.innerWidth;
-    const vpH = window.innerHeight;
-    const pct = img.size ?? 80;
-    const w   = vpW * pct / 100;
-    const h   = w * (texture.height / texture.width);
-    const [hPos, vPos] = (img.position || 'center center').split(' ');
-    sprite.x      = hPos === 'left'  ? 0 : hPos === 'right'  ? vpW - w : (vpW - w) / 2;
-    sprite.y      = vPos === 'top'   ? 0 : vPos === 'bottom' ? vpH - h : (vpH - h) / 2;
+    const vpW  = window.innerWidth;
+    const vpH  = window.innerHeight;
+    const pct  = img.size ?? 80;
+    const w    = vpW * pct / 100;
+    const sprH = w * (texture.height / texture.width);
+    const parts = (img.position || 'center center').split(' ');
+    const xKey = parts[0] || 'center';
+    const yKey = parts[1] || 'center';
+    const KMAP = { left: 0, center: 0.5, right: 1, top: 0, bottom: 1 };
+    const fx = xKey in KMAP ? KMAP[xKey] : (parseFloat(xKey) || 50) / 100;
+    const fy = yKey in KMAP ? KMAP[yKey] : (parseFloat(yKey) || 50) / 100;
+    sprite.x      = fx * (vpW - w);
+    sprite.y      = fy * (vpH - sprH);
     sprite.width  = w;
-    sprite.height = h;
+    sprite.height = sprH;
   }
 
   function showFx(img, fadeInSec, easing) {

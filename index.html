@@ -112,11 +112,11 @@
   .move-image { background: transparent; border: none; color: var(--muted); font-size: 0.85rem; line-height: 1; padding: 0 0.2rem; cursor: pointer; flex-shrink: 0; }
   .move-image:hover:not(:disabled) { color: var(--ink); }
   .move-image:disabled { opacity: 0.25; cursor: default; }
-  /* ── Position picker ── */
-  .pos-grid { display: grid; grid-template-columns: repeat(3, 14px); grid-template-rows: repeat(3, 14px); gap: 2px; flex-shrink: 0; }
-  .pos-cell { width: 14px; height: 14px; background: var(--line); border: none; border-radius: 2px; cursor: pointer; padding: 0; }
-  .pos-cell:hover { background: var(--muted); }
-  .pos-cell.active { background: var(--accent); }
+  /* ── Drag-to-position canvas ── */
+  .pos-canvas-wrap { position: relative; width: 108px; height: 60px; flex-shrink: 0; cursor: crosshair; border: 1px solid var(--line); border-radius: 2px; overflow: hidden; }
+  .pos-canvas-wrap canvas { display: block; }
+
+
   /* ── Size slider ── */
   .size-ctrl { display: flex; align-items: center; gap: 0.45rem; flex: 1; min-width: 0; }
   .size-ctrl-label { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); flex-shrink: 0; }
@@ -230,7 +230,11 @@
   <!-- ── Set list ── -->
   <div class="topbar">
     <h2>Saved sets</h2>
-    <button class="btn btn-primary" id="new-btn">+ New set</button>
+    <div style="display:flex;gap:0.5rem;align-items:center;">
+      <button class="btn btn-ghost btn-sm" id="export-btn">↓ Export</button>
+      <label class="btn btn-ghost btn-sm" style="cursor:pointer;">↑ Import<input type="file" id="import-input" accept=".json" hidden></label>
+      <button class="btn btn-primary" id="new-btn">+ New set</button>
+    </div>
   </div>
   <div id="set-list">
     <p class="set-empty" id="empty-state">No sets yet – click "New set" to get started.</p>
@@ -395,6 +399,129 @@ function saveSets(sets) {
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 function numOr(val, fallback) { const n = parseFloat(val); return Number.isFinite(n) ? n : fallback; }
 
+// ── Export / Import ──
+function exportSets() {
+  const json = JSON.stringify(sets, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `projector-sets-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function importSets(file) {
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      let imported = JSON.parse(ev.target.result);
+      if (!Array.isArray(imported)) throw new Error('Expected an array of sets.');
+      imported = imported.map(s => {
+        if (!s.videos && s.url) s = { ...s, videos: [s.url] };
+        if (!s.images && s.imageDataUrl) s = { ...s, images: [{ imageDataUrl: s.imageDataUrl, duration: s.duration ?? 5 }] };
+        if (Array.isArray(s.videos)) s = { ...s, videos: s.videos.map(v => typeof v === 'string' ? { url: v, startAt: 0 } : v) };
+        return s;
+      }).filter(s => s.name);
+      if (imported.length === 0) { alert('No valid sets found in file.'); return; }
+      imported = imported.map(s => ({ ...s, id: uid() }));
+      sets = [...sets, ...imported];
+      saveSets(sets);
+      renderList();
+      document.getElementById('import-input').value = '';
+      alert(`Imported ${imported.length} set${imported.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      alert('Failed to import: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ── Drag-to-position state (module-level to avoid accumulating window listeners) ──
+let dragState = null; // { idx, canvas } during active drag
+const posImgCache = new Map(); // dataUrl → HTMLImageElement, for async draw
+
+function parsePosToFraction(pos) {
+  const parts = (pos || 'center center').split(' ');
+  const h = parts[0] || 'center';
+  const v = parts[1] || 'center';
+  const KMAP = { left: 0, center: 0.5, right: 1, top: 0, bottom: 1 };
+  const fx = h in KMAP ? KMAP[h] : (parseFloat(h) || 50) / 100;
+  const fy = v in KMAP ? KMAP[v] : (parseFloat(v) || 50) / 100;
+  return { fx, fy };
+}
+
+function drawPosCanvas(canvas, img) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0d0d10';
+  ctx.fillRect(0, 0, W, H);
+  // Faint rule-of-thirds grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  ctx.lineWidth = 0.5;
+  for (let i = 1; i < 3; i++) {
+    ctx.beginPath(); ctx.moveTo(W / 3 * i, 0); ctx.lineTo(W / 3 * i, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, H / 3 * i); ctx.lineTo(W, H / 3 * i); ctx.stroke();
+  }
+  // Draw the overlay image at its current position/size
+  if (img.imageDataUrl) {
+    const cached = posImgCache.get(img.imageDataUrl);
+    if (cached && cached.complete && cached.naturalWidth > 0) {
+      const size = img.size ?? 80;
+      const iw   = W * size / 100;
+      const ih   = iw * (cached.naturalHeight / cached.naturalWidth);
+      const { fx, fy } = parsePosToFraction(img.position);
+      const ix = fx * (W - iw);
+      const iy = fy * (H - ih);
+      ctx.globalAlpha = 0.65;
+      ctx.drawImage(cached, ix, iy, iw, ih);
+      ctx.globalAlpha = 1;
+    } else if (!cached) {
+      const el = new Image();
+      posImgCache.set(img.imageDataUrl, el);
+      el.onload = () => drawPosCanvas(canvas, img);
+      el.src = img.imageDataUrl;
+    }
+  }
+  // Position dot
+  const { fx, fy } = parsePosToFraction(img.position);
+  const dotX = fx * W;
+  const dotY = fy * H;
+  ctx.beginPath();
+  ctx.arc(dotX, dotY, 4.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#ff5a1f';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function posFromEvent(canvas, e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.round(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))  * 100);
+  const y = Math.round(Math.max(0, Math.min(1, (e.clientY - rect.top)  / rect.height)) * 100);
+  return `${x}% ${y}%`;
+}
+
+function applyDrag(e) {
+  if (!dragState) return;
+  const { idx, canvas } = dragState;
+  formImages[idx].position = posFromEvent(canvas, e);
+  formDirty = true;
+  drawPosCanvas(canvas, formImages[idx]);
+  const item = canvas.closest('.image-item');
+  if (item) item.querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
+}
+
+window.addEventListener('mousemove', applyDrag);
+window.addEventListener('mouseup',   () => { dragState = null; });
+window.addEventListener('touchmove', e => { if (dragState) { e.preventDefault(); applyDrag(e.touches[0]); } }, { passive: false });
+window.addEventListener('touchend',  () => { dragState = null; });
+
 // ── State ──
 let sets = loadSets();
 let editingId  = null;  // null = new set, string = editing existing
@@ -505,9 +632,9 @@ function ytThumbUrl(url) {
 // Builds the expandable tile panel shown below a live set row.
 // state: { videoIndex, imageIndex } from projector_state, or null.
 function renderLivePanel(set, state) {
-  const videoIdx = state?.videoIndex ?? 0;
-  const imageIdx = state?.imageIndex ?? 0;
-  const isPaused = state?.overlayPaused ?? false;
+  const videoIdx      = state?.videoIndex    ?? 0;
+  const imageIdx      = state?.imageIndex    ?? 0;
+  const isPaused      = state?.overlayPaused ?? false;
 
   const videoTiles = (set.videos || []).map((v, i) => {
     const thumb  = ytThumbUrl(v.url);
@@ -592,11 +719,6 @@ function maybeClose() {
 }
 
 // ── Image list UI ──
-const POS_CELLS = [
-  'left top','center top','right top',
-  'left center','center center','right center',
-  'left bottom','center bottom','right bottom',
-];
 
 function thumbStyle(img) {
   const size = img.size ?? 100;
@@ -607,9 +729,6 @@ function thumbStyle(img) {
 function renderImageInputs() {
   const container = document.getElementById('f-images');
   container.innerHTML = formImages.map((img, i) => {
-    const posGrid = POS_CELLS.map(p =>
-      `<button type="button" class="pos-cell${(img.position || 'center center') === p ? ' active' : ''}" data-idx="${i}" data-pos="${p}" title="${p}"></button>`
-    ).join('');
     return `
     <div class="image-item">
       <div class="image-item-top">
@@ -623,7 +742,7 @@ function renderImageInputs() {
           <button type="button" class="remove-image" onclick="removeImage(${i})" title="Remove">×</button>` : ''}
       </div>
       <div class="image-item-bottom">
-        <div class="pos-grid">${posGrid}</div>
+        <div class="pos-canvas-wrap"><canvas width="108" height="60" data-idx="${i}"></canvas></div>
         <div class="size-ctrl">
           <span class="size-ctrl-label">Size</span>
           <input type="range" data-idx="${i}" data-kind="size-range" min="10" max="200" step="1" value="${img.size ?? 80}">
@@ -667,8 +786,11 @@ function renderImageInputs() {
           canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
           const hasAlpha = ['image/png', 'image/gif', 'image/webp'].includes(file.type);
           formImages[idx].imageDataUrl = hasAlpha ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.90);
+          posImgCache.delete(formImages[idx].imageDataUrl); // bust cache so new image redraws
           const item = e.target.closest('.image-item');
           item.querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
+          const posCanvas = item.querySelector('.pos-canvas-wrap canvas');
+          if (posCanvas) drawPosCanvas(posCanvas, formImages[idx]);
         };
         img.src = ev.target.result;
       };
@@ -694,6 +816,8 @@ function renderImageInputs() {
       const item = e.target.closest('.image-item');
       item.querySelector('input[data-kind="size"]').value = val;
       item.querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
+      const posCanvas = item.querySelector('.pos-canvas-wrap canvas');
+      if (posCanvas) drawPosCanvas(posCanvas, formImages[idx]);
     });
   });
 
@@ -706,18 +830,24 @@ function renderImageInputs() {
       const item = e.target.closest('.image-item');
       item.querySelector('input[data-kind="size-range"]').value = val;
       item.querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
+      const posCanvas = item.querySelector('.pos-canvas-wrap canvas');
+      if (posCanvas) drawPosCanvas(posCanvas, formImages[idx]);
     });
   });
 
-  container.querySelectorAll('.pos-cell').forEach(btn => {
-    btn.addEventListener('click', e => {
-      const idx = parseInt(e.target.dataset.idx);
-      formImages[idx].position = e.target.dataset.pos;
-      formDirty = true;
-      e.target.closest('.pos-grid').querySelectorAll('.pos-cell').forEach(c => c.classList.remove('active'));
-      e.target.classList.add('active');
-      e.target.closest('.image-item').querySelector('.image-thumb').style.cssText = thumbStyle(formImages[idx]);
+  container.querySelectorAll('.pos-canvas-wrap canvas').forEach(canvas => {
+    const idx = parseInt(canvas.dataset.idx);
+    drawPosCanvas(canvas, formImages[idx]);
+    canvas.addEventListener('mousedown', e => {
+      dragState = { idx: parseInt(canvas.dataset.idx), canvas };
+      applyDrag(e);
+      e.preventDefault();
     });
+    canvas.addEventListener('touchstart', e => {
+      dragState = { idx: parseInt(canvas.dataset.idx), canvas };
+      applyDrag(e.touches[0]);
+      e.preventDefault();
+    }, { passive: false });
   });
 
   container.querySelectorAll('select[data-kind="effect"]').forEach(sel => {
@@ -865,6 +995,11 @@ document.getElementById('save-btn').addEventListener('click', () => {
 
 document.getElementById('cancel-btn').addEventListener('click', maybeClose);
 document.getElementById('new-btn').addEventListener('click', () => openForm());
+document.getElementById('export-btn').addEventListener('click', exportSets);
+document.getElementById('import-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) importSets(file);
+});
 document.getElementById('add-video-btn').addEventListener('click', addVideo);
 document.getElementById('add-image-btn').addEventListener('click', addImage);
 document.getElementById('f-bounce').addEventListener('change', (e) => {
