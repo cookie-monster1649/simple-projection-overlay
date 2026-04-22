@@ -60,6 +60,8 @@
     cursor: pointer; text-align: left;
   }
   .settings-dropdown-item:hover { color: var(--ink); background: rgba(255,255,255,0.04); }
+  .settings-toggle-item { justify-content: space-between; gap: 0.75rem; }
+  .settings-toggle-item input[type="checkbox"] { width: 1rem; height: 1rem; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
 
   /* ── Buttons ── */
   .btn { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 1rem; font-family: ui-monospace, monospace; font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase; border: none; border-radius: 2px; cursor: pointer; transition: opacity 0.15s, transform 0.15s; text-decoration: none; }
@@ -199,6 +201,8 @@
 
   /* ── Live media panel ── */
   .set-live-panel { background: #0e0e12; border-bottom: 1px solid var(--line); padding: 0.65rem 1.25rem 0.85rem; }
+  .live-main-row { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(220px, 0.85fr); gap: 1rem; align-items: start; }
+  .live-side-col { min-width: 0; }
   .live-label { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.4rem; }
   .tile-row { display: flex; gap: 0.45rem; flex-wrap: wrap; margin-bottom: 0.65rem; }
   .tile-row:last-child { margin-bottom: 0; }
@@ -216,6 +220,33 @@
   .btn-paused:hover { opacity: 0.8; }
   .paused-indicator { font-family: ui-monospace, monospace; font-size: 0.65rem; letter-spacing: 0.15em; text-transform: uppercase; color: #f59e0b; }
   .live-clock { font-family: ui-monospace, monospace; font-size: 5rem; letter-spacing: 0.08em; color: var(--ink); margin-bottom: 0.75rem; line-height: 1; }
+  .live-preview-wrap { min-width: 0; }
+  .live-preview-shell {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+    background: #000;
+    aspect-ratio: 16 / 9;
+    position: relative;
+  }
+  .live-preview-iframe {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    pointer-events: none;
+    background: #000;
+  }
+  .live-preview-meta {
+    margin-top: 0.45rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  @media (max-width: 920px) {
+    .live-main-row { grid-template-columns: 1fr; }
+  }
 
   [hidden] { display: none !important; }
 
@@ -244,6 +275,10 @@
     <button class="btn btn-live btn-sm" id="live-btn" hidden>● Live</button>
     <button class="btn btn-ghost btn-sm" id="settings-btn" aria-label="Settings">⚙</button>
     <div class="settings-dropdown" id="settings-dropdown" hidden>
+      <label class="settings-dropdown-item settings-toggle-item" for="global-mute-toggle">
+        Mute on launch
+        <input type="checkbox" id="global-mute-toggle">
+      </label>
       <button class="settings-dropdown-item" id="workspace-btn">📁 Choose Folder</button>
       <button class="settings-dropdown-item" id="export-btn">↓ Export</button>
       <label class="settings-dropdown-item" style="cursor:pointer;">
@@ -709,6 +744,150 @@ let activeSetId  = null;   // id of the set currently in the player
 let activePoll   = null;   // module-level poll handle (prevents duplicate intervals)
 let lastStateJson = null;  // last-seen projector_state string for change detection
 let liveClockInterval = null;
+let liveSessionId = null;
+let managerSyncChannel = null;
+let liveStateCache = null;
+const GLOBAL_MUTE_PREF_KEY = 'projector_global_mute_on_launch';
+
+function makeLiveSessionId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildPlayerUrl(role, sessionId, { preview = false, muted = false } = {}) {
+  const params = new URLSearchParams({ role });
+  if (sessionId) params.set('session', sessionId);
+  if (preview) params.set('preview', '1');
+  if (muted) params.set('muted', '1');
+  return `player.html?${params.toString()}`;
+}
+
+function getGlobalMuteOnLaunch() {
+  try { return localStorage.getItem(GLOBAL_MUTE_PREF_KEY) === '1'; }
+  catch { return false; }
+}
+
+function setGlobalMuteOnLaunch(enabled) {
+  try {
+    if (enabled) localStorage.setItem(GLOBAL_MUTE_PREF_KEY, '1');
+    else localStorage.removeItem(GLOBAL_MUTE_PREF_KEY);
+  } catch { /* non-fatal */ }
+}
+
+function closeManagerSyncChannel() {
+  if (!managerSyncChannel) return;
+  managerSyncChannel.close();
+  managerSyncChannel = null;
+}
+
+function normaliseLiveState(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const videoIndex = Number(raw.videoIndex);
+  const imageIndex = Number(raw.imageIndex);
+  return {
+    videoIndex: Number.isFinite(videoIndex) ? Math.max(0, Math.floor(videoIndex)) : 0,
+    imageIndex: Number.isFinite(imageIndex) ? Math.max(0, Math.floor(imageIndex)) : 0,
+    overlayPaused: !!raw.overlayPaused,
+    isPlaying: !!raw.isPlaying,
+    currentTime: Number.isFinite(Number(raw.currentTime)) ? Number(raw.currentTime) : 0,
+    sentAt: Number.isFinite(Number(raw.sentAt)) ? Number(raw.sentAt) : Date.now(),
+  };
+}
+
+function readStoredLiveState() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('projector_state') || 'null');
+    return normaliseLiveState(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function getLiveState() {
+  return liveStateCache || readStoredLiveState();
+}
+
+function applyLiveSnapshot(snapshot) {
+  const next = normaliseLiveState(snapshot);
+  if (!next) return;
+  const prev = liveStateCache;
+  liveStateCache = next;
+  const stateChanged = !prev
+    || prev.videoIndex !== next.videoIndex
+    || prev.imageIndex !== next.imageIndex
+    || prev.overlayPaused !== next.overlayPaused;
+  if (!stateChanged) return;
+  try {
+    localStorage.setItem('projector_state', JSON.stringify({
+      videoIndex: next.videoIndex,
+      imageIndex: next.imageIndex,
+      overlayPaused: next.overlayPaused,
+    }));
+    lastStateJson = localStorage.getItem('projector_state');
+  } catch { /* non-fatal */ }
+  if (!formOpen) renderList();
+}
+
+function openManagerSyncChannel(sessionId) {
+  closeManagerSyncChannel();
+  if (!sessionId || typeof BroadcastChannel === 'undefined') return;
+  managerSyncChannel = new BroadcastChannel(`projector-sync:${sessionId}`);
+  managerSyncChannel.addEventListener('message', (event) => {
+    const msg = event.data;
+    if (!msg || msg.type !== 'snapshot') return;
+    applyLiveSnapshot(msg);
+  });
+}
+
+function renderLiveDetailShell() {
+  return `
+    <div class="set-live-panel">
+      <div id="live-clock" class="live-clock"></div>
+      <div class="live-main-row">
+        <div class="live-preview-wrap">
+          <div class="live-preview-shell">
+            <iframe id="live-preview-frame" class="live-preview-iframe" title="Live output preview" tabindex="-1" aria-hidden="true" loading="eager" allow="autoplay; fullscreen"></iframe>
+          </div>
+          <div class="live-preview-meta">Muted · Read only</div>
+        </div>
+        <div id="live-controls-host" class="live-side-col"></div>
+      </div>
+    </div>
+  `;
+}
+
+function ensureLiveDetailShell(liveEl) {
+  if (!liveEl.querySelector('#live-preview-frame')) {
+    liveEl.innerHTML = renderLiveDetailShell();
+  }
+  const frame = liveEl.querySelector('#live-preview-frame');
+  if (!frame || !liveSessionId) return;
+  const session = frame.dataset.session || '';
+  if (session === liveSessionId) return;
+  frame.dataset.session = liveSessionId;
+  frame.src = buildPlayerUrl('follower', liveSessionId, { preview: true, muted: true });
+}
+
+function renderLiveControls(set, state) {
+  const host = document.getElementById('live-controls-host');
+  if (!host) return;
+  host.innerHTML = renderLivePanel(set, state);
+  startLiveClock();
+}
+
+function resetLiveRuntime() {
+  playerWin = null;
+  activeSetId = null;
+  liveSessionId = null;
+  liveStateCache = null;
+  lastStateJson = null;
+  const liveEl = document.getElementById('detail-live');
+  if (liveEl) liveEl.innerHTML = '';
+  closeManagerSyncChannel();
+  if (liveClockInterval) {
+    cancelAnimationFrame(liveClockInterval);
+    liveClockInterval = null;
+  }
+}
 
 // ── Render list ──
 function renderList() {
@@ -776,12 +955,15 @@ function renderDetailPanel() {
   }
 
   if (windowOpen && activeSetId) {
-    const set       = sets.find(s => s.id === activeSetId);
-    const liveState = JSON.parse(localStorage.getItem('projector_state') || 'null');
+    const set = sets.find(s => s.id === activeSetId);
+    const liveState = getLiveState();
     formEl.hidden  = true;
     liveEl.hidden  = false;
     emptyEl.hidden = true;
-    if (set) { liveEl.innerHTML = renderLivePanel(set, liveState); startLiveClock(); }
+    if (set) {
+      ensureLiveDetailShell(liveEl);
+      renderLiveControls(set, liveState);
+    }
     return;
   }
 
@@ -898,14 +1080,11 @@ function renderLivePanel(set, state) {
        <span class="paused-indicator">● images paused</span>`
     : `<button class="btn btn-ghost btn-sm" onclick="toggleOverlay()">⏸ Pause images</button>`;
 
-  return `<div class="set-live-panel">
-    <div id="live-clock" class="live-clock"></div>
-    <div class="live-controls">${pauseControl}</div>
+  return `<div class="live-controls">${pauseControl}</div>
     <p class="live-label">Videos</p>
     <div class="tile-row">${videoTiles}</div>
     <p class="live-label">Images</p>
-    <div class="tile-row">${imageTiles}</div>
-  </div>`;
+    <div class="tile-row">${imageTiles}</div>`;
 }
 
 // ── Form open / close ──
@@ -1319,6 +1498,13 @@ document.getElementById('import-input').addEventListener('change', e => {
   if (file) importSets(file);
   document.getElementById('settings-dropdown').hidden = true;
 });
+const globalMuteToggle = document.getElementById('global-mute-toggle');
+if (globalMuteToggle) {
+  globalMuteToggle.checked = getGlobalMuteOnLaunch();
+  globalMuteToggle.addEventListener('change', () => {
+    setGlobalMuteOnLaunch(globalMuteToggle.checked);
+  });
+}
 
 // Live button – if form open with dirty changes, trigger discard modal
 document.getElementById('live-btn').addEventListener('click', () => {
@@ -1378,6 +1564,8 @@ async function launchSet(id) {
   if (!set) return;
 
   activeSetId   = id;
+  liveSessionId = makeLiveSessionId();
+  liveStateCache = null;
   lastStateJson = null;
 
   // Clear stale state from the previous set so tiles don't flash wrong highlights
@@ -1410,26 +1598,24 @@ async function launchSet(id) {
     videoFadeDuration: set.videoFadeDuration ?? 2,
   });
 
+  const leaderUrl = buildPlayerUrl('leader', liveSessionId, { muted: getGlobalMuteOnLaunch() });
   if (playerWin && !playerWin.closed) {
-    // Config is already in localStorage; reload forces a fresh read of it.
-    // Setting location.href to the same URL is silently ignored by browsers.
-    playerWin.location.reload();
+    // Reuse the existing named window and load the new session URL.
+    playerWin.location.href = leaderUrl;
   } else {
     // No window open yet – open one (named so it's always the same slot)
-    playerWin = window.open('player.html', 'projector-output', 'width=1280,height=720');
+    playerWin = window.open(leaderUrl, 'projector-output', 'width=1280,height=720');
   }
+  openManagerSyncChannel(liveSessionId);
 
   // One module-level poll: detects window closure AND player state changes.
   // Cancelling any prior poll prevents duplicate intervals on set switches.
   if (activePoll) clearInterval(activePoll);
   activePoll = setInterval(() => {
     if (playerWin && playerWin.closed) {
-      playerWin    = null;
-      activeSetId  = null;
-      lastStateJson = null;
+      resetLiveRuntime();
       clearInterval(activePoll);
       activePoll = null;
-      if (liveClockInterval) { cancelAnimationFrame(liveClockInterval); liveClockInterval = null; }
       renderList();
       return;
     }
@@ -1437,6 +1623,7 @@ async function launchSet(id) {
     const stateJson = localStorage.getItem('projector_state');
     if (stateJson !== lastStateJson) {
       lastStateJson = stateJson;
+      liveStateCache = readStoredLiveState();
       renderList();
     }
   }, 1000);
@@ -1460,7 +1647,7 @@ function seekMedia(type, index) {
 // Reads current paused state from projector_state and sends the inverse command.
 function toggleOverlay() {
   if (!playerWin || playerWin.closed) return;
-  const state    = JSON.parse(localStorage.getItem('projector_state') || 'null');
+  const state    = getLiveState();
   const isPaused = state?.overlayPaused ?? false;
   localStorage.removeItem('projector_command');
   localStorage.setItem('projector_command', JSON.stringify({
@@ -1502,6 +1689,7 @@ renderResBadge();
 window.addEventListener('storage', (e) => {
   if (e.key === 'projector_screen_res') renderResBadge();
 });
+window.addEventListener('beforeunload', closeManagerSyncChannel);
 
 // ── Init ──
 async function compressDataUrl(dataUrl) {
