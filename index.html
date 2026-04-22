@@ -165,6 +165,14 @@
   .form-group-title { font-family: ui-monospace, monospace; font-size: 0.72rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink); font-weight: 500; margin: 0; }
   .form-group-desc { font-family: ui-monospace, monospace; font-size: 0.68rem; color: var(--muted); margin: 0; }
   .form-group .hint { margin-top: 0.6rem; }
+  .video-total-summary {
+    margin: -0.4rem 0 0.75rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
   /* Name field sits outside cards as the primary identity field */
   .form-name-field { margin-bottom: 1.5rem; }
   .form-name-field input { font-family: ui-serif, Georgia, serif !important; font-size: 1.2rem !important; }
@@ -341,6 +349,7 @@
         <p class="form-group-title">Videos</p>
         <p class="form-group-desc">Played in order · each entry starts when the previous ends</p>
       </div>
+      <p class="video-total-summary" id="video-total-summary">YouTube total – add a YouTube video to see the runtime</p>
       <div class="list-cols list-cols--video">
         <span></span>
         <span>YouTube URL</span>
@@ -763,6 +772,15 @@ let liveSessionId = null;
 let managerSyncChannel = null;
 let liveStateCache = null;
 const GLOBAL_MUTE_PREF_KEY = 'projector_global_mute_on_launch';
+const ytDurationCache = new Map();
+const ytDurationPending = new Map();
+let ytIframeApiPromise = null;
+let ytDurationProbePromise = null;
+let ytDurationProbePlayer = null;
+let ytDurationProbeQueue = [];
+let ytDurationProbeActive = null;
+let videoTotalRefreshToken = 0;
+let videoTotalRefreshTimeoutId = null;
 
 function makeLiveSessionId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -1028,21 +1046,276 @@ function fmtTime(sec) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function ytThumbUrl(url) {
+// Example parsed video target:
+// { videoId: 'dQw4w9WgXcQ', listId: null }
+function parseYouTubeUrl(url) {
   try {
-    const u    = new URL(url.trim());
+    const u    = new URL((url || '').trim());
     const host = u.hostname.replace(/^www\./, '');
-    let vid    = null;
+    const path = u.pathname.split('/').filter(Boolean);
+    let videoId = null;
+
     if (host === 'youtu.be') {
-      vid = u.pathname.slice(1) || null;
+      videoId = path[0] || null;
     } else if (host.endsWith('youtube.com')) {
-      if      (u.pathname === '/watch')              vid = u.searchParams.get('v');
-      else if (u.pathname.startsWith('/embed/'))     vid = u.pathname.split('/')[2] || null;
-      else if (u.pathname.startsWith('/live/'))      vid = u.pathname.split('/')[2] || null;
-      else if (u.pathname.startsWith('/shorts/'))    vid = u.pathname.split('/')[2] || null;
+      if      (u.pathname === '/watch')           videoId = u.searchParams.get('v');
+      else if (u.pathname.startsWith('/embed/'))  videoId = path[1] || null;
+      else if (u.pathname.startsWith('/live/'))   videoId = path[1] || null;
+      else if (u.pathname.startsWith('/shorts/')) videoId = path[1] || null;
     }
-    return vid ? `https://img.youtube.com/vi/${vid}/mqdefault.jpg` : null;
-  } catch { return null; }
+
+    return {
+      videoId: videoId || null,
+      listId: u.searchParams.get('list') || null,
+    };
+  } catch {
+    return { videoId: null, listId: null };
+  }
+}
+
+function formatDurationClock(totalSec) {
+  const sec = Math.max(0, Math.round(totalSec || 0));
+  const hours = Math.floor(sec / 3600);
+  const minutes = Math.floor((sec % 3600) / 60);
+  const seconds = sec % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function ytThumbUrl(url) {
+  const { videoId } = parseYouTubeUrl(url);
+  return videoId ? `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` : null;
+}
+
+// ── YouTube metadata probe ──
+function loadYouTubeIframeApi() {
+  if (window.YT?.Player) return Promise.resolve(window.YT);
+  if (ytIframeApiPromise) return ytIframeApiPromise;
+
+  ytIframeApiPromise = new Promise((resolve, reject) => {
+    const existingScript = document.querySelector('script[data-yt-iframe-api="1"]');
+    const previousReady = window.onYouTubeIframeAPIReady;
+
+    window.onYouTubeIframeAPIReady = () => {
+      try { previousReady?.(); } catch { /* non-fatal */ }
+      resolve(window.YT);
+    };
+
+    if (existingScript) return;
+
+    const script = document.createElement('script');
+    script.src = 'https://www.youtube.com/iframe_api';
+    script.async = true;
+    script.dataset.ytIframeApi = '1';
+    script.onerror = () => {
+      ytIframeApiPromise = null;
+      reject(new Error('Failed to load the YouTube IFrame API.'));
+    };
+    document.head.appendChild(script);
+  });
+
+  return ytIframeApiPromise;
+}
+
+function normaliseYouTubeDuration(sec) {
+  const duration = Math.round(Number(sec) || 0);
+  return duration > 0 ? duration : null;
+}
+
+function finishYouTubeDurationProbe(durationSec) {
+  if (!ytDurationProbeActive) return;
+
+  const { videoId, resolve, pollId, timeoutId } = ytDurationProbeActive;
+  clearInterval(pollId);
+  clearTimeout(timeoutId);
+  ytDurationProbeActive = null;
+  ytDurationPending.delete(videoId);
+  ytDurationCache.set(videoId, durationSec);
+
+  try { ytDurationProbePlayer?.stopVideo?.(); } catch { /* non-fatal */ }
+  resolve(durationSec);
+  runNextYouTubeDurationProbe();
+}
+
+function handleYouTubeDurationProbeStateChange() {
+  if (!ytDurationProbeActive || !ytDurationProbePlayer) return;
+  const durationSec = normaliseYouTubeDuration(ytDurationProbePlayer.getDuration?.());
+  if (durationSec !== null) finishYouTubeDurationProbe(durationSec);
+}
+
+function handleYouTubeDurationProbeError() {
+  finishYouTubeDurationProbe(null);
+}
+
+async function ensureYouTubeDurationProbe() {
+  if (ytDurationProbePromise) return ytDurationProbePromise;
+
+  ytDurationProbePromise = (async () => {
+    await loadYouTubeIframeApi();
+
+    const mount = document.createElement('div');
+    mount.id = 'yt-duration-probe';
+    mount.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;pointer-events:none;';
+    document.body.appendChild(mount);
+
+    return new Promise((resolve, reject) => {
+      try {
+        ytDurationProbePlayer = new YT.Player(mount, {
+          width: '1',
+          height: '1',
+          host: 'https://www.youtube.com',
+          playerVars: {
+            autoplay: 0,
+            controls: 0,
+            rel: 0,
+            playsinline: 1,
+          },
+          events: {
+            onReady: () => resolve(ytDurationProbePlayer),
+            onStateChange: handleYouTubeDurationProbeStateChange,
+            onError: handleYouTubeDurationProbeError,
+          },
+        });
+      } catch (error) {
+        ytDurationProbePromise = null;
+        reject(error);
+      }
+    });
+  })();
+
+  return ytDurationProbePromise;
+}
+
+async function runNextYouTubeDurationProbe() {
+  if (ytDurationProbeActive || ytDurationProbeQueue.length === 0) return;
+
+  let player;
+  try {
+    player = await ensureYouTubeDurationProbe();
+  } catch {
+    const failed = ytDurationProbeQueue.shift();
+    if (!failed) return;
+    ytDurationPending.delete(failed.videoId);
+    ytDurationCache.set(failed.videoId, null);
+    failed.resolve(null);
+    runNextYouTubeDurationProbe();
+    return;
+  }
+
+  if (ytDurationProbeActive || ytDurationProbeQueue.length === 0) return;
+
+  const next = ytDurationProbeQueue.shift();
+  ytDurationProbeActive = {
+    ...next,
+    pollId: setInterval(() => {
+      const durationSec = normaliseYouTubeDuration(player.getDuration?.());
+      if (durationSec !== null) finishYouTubeDurationProbe(durationSec);
+    }, 250),
+    timeoutId: setTimeout(() => finishYouTubeDurationProbe(null), 7000),
+  };
+
+  try {
+    player.cueVideoById({ videoId: next.videoId, suggestedQuality: 'small' });
+  } catch {
+    finishYouTubeDurationProbe(null);
+  }
+}
+
+function getYouTubeVideoDuration(videoId) {
+  if (!videoId) return Promise.resolve(null);
+  if (ytDurationCache.has(videoId)) return Promise.resolve(ytDurationCache.get(videoId));
+  if (ytDurationPending.has(videoId)) return ytDurationPending.get(videoId);
+
+  const pending = new Promise(resolve => {
+    ytDurationProbeQueue.push({ videoId, resolve });
+    runNextYouTubeDurationProbe();
+  });
+
+  ytDurationPending.set(videoId, pending);
+  return pending;
+}
+
+function setVideoTotalSummary(text, title = '') {
+  const summary = document.getElementById('video-total-summary');
+  if (!summary) return;
+  summary.textContent = text;
+  summary.title = title;
+}
+
+async function refreshVideoTotalSummary() {
+  const refreshToken = ++videoTotalRefreshToken;
+  const summary = document.getElementById('video-total-summary');
+  if (!summary) return;
+
+  const entries = formVideos.map(video => {
+    const url = (video.url || '').trim();
+    if (!url) return { kind: 'empty' };
+    if (video.localVideoKey) return { kind: 'local' };
+
+    const parsed = parseYouTubeUrl(url);
+    if (!parsed.videoId) return { kind: 'unsupported' };
+
+    return {
+      kind: 'youtube',
+      videoId: parsed.videoId,
+      startAt: Math.max(0, Number(video.startAt) || 0),
+    };
+  });
+
+  const youtubeEntries = entries.filter(entry => entry.kind === 'youtube');
+  const localCount = entries.filter(entry => entry.kind === 'local').length;
+  const unsupportedCount = entries.filter(entry => entry.kind === 'unsupported').length;
+
+  if (!youtubeEntries.length) {
+    if (unsupportedCount > 0) {
+      const summaryParts = ['YouTube total – unavailable', `${unsupportedCount} unknown`];
+      if (localCount > 0) summaryParts.push(`${localCount} local ignored`);
+      setVideoTotalSummary(
+        summaryParts.join(' · '),
+        'Unsupported links, playlists, live streams and unavailable videos are not counted.'
+      );
+      return;
+    }
+
+    const suffix = localCount ? ' · local files are not counted' : '';
+    setVideoTotalSummary(`YouTube total – add a YouTube video to see the runtime${suffix}`);
+    return;
+  }
+
+  setVideoTotalSummary('YouTube total – calculating…');
+
+  const durations = await Promise.all(youtubeEntries.map(async entry => {
+    const durationSec = await getYouTubeVideoDuration(entry.videoId);
+    if (!Number.isFinite(durationSec)) return null;
+    return Math.max(0, durationSec - entry.startAt);
+  }));
+
+  if (refreshToken !== videoTotalRefreshToken) return;
+
+  const knownDurations = durations.filter(durationSec => Number.isFinite(durationSec));
+  const totalSeconds = knownDurations.reduce((sum, durationSec) => sum + durationSec, 0);
+  const unresolvedCount = youtubeEntries.length - knownDurations.length;
+  const summaryParts = [
+    `YouTube total – ${knownDurations.length ? formatDurationClock(totalSeconds) : 'unavailable'}`,
+  ];
+
+  if (unresolvedCount + unsupportedCount > 0) summaryParts.push(`${unresolvedCount + unsupportedCount} unknown`);
+  if (localCount > 0) summaryParts.push(`${localCount} local ignored`);
+
+  const title = unresolvedCount + unsupportedCount > 0
+    ? 'Unsupported links, playlists, live streams and unavailable videos are not counted.'
+    : '';
+
+  setVideoTotalSummary(summaryParts.join(' · '), title);
+}
+
+function scheduleVideoTotalSummaryRefresh(delayMs = 180) {
+  clearTimeout(videoTotalRefreshTimeoutId);
+  videoTotalRefreshTimeoutId = setTimeout(() => {
+    refreshVideoTotalSummary().catch(() => {
+      setVideoTotalSummary('YouTube total – unavailable', 'Could not fetch one or more YouTube durations.');
+    });
+  }, delayMs);
 }
 
 function startLiveClock() {
@@ -1187,6 +1460,7 @@ function renderImageInputs() {
           <option value="swirl"    ${(img.effect||'none')==='swirl'    ? 'selected':''}>Swirl</option>
           <option value="glitch"   ${(img.effect||'none')==='glitch'   ? 'selected':''}>Glitch</option>
           <option value="pixelate" ${(img.effect||'none')==='pixelate' ? 'selected':''}>Pixelate</option>
+          <option value="worm"     ${(img.effect||'none')==='worm'     ? 'selected':''}>Worm drag</option>
         </select>
         <div class="fx-speed"${(img.effect||'none')==='none' ? ' hidden' : ''}>
           ${['slow','medium','fast'].map(s =>
@@ -1374,9 +1648,12 @@ function renderVideoInputs() {
       const idx = parseInt(e.target.dataset.idx);
       formVideos[idx].url = e.target.value;
       const img = container.querySelector(`img.yt-thumb[data-idx="${idx}"]`);
-      if (!img) return;
-      const thumbUrl = ytThumbUrl(e.target.value);
-      if (thumbUrl) { img.src = thumbUrl; } else { img.src = ''; img.style.display = 'none'; }
+      if (img) {
+        const thumbUrl = ytThumbUrl(e.target.value);
+        if (thumbUrl) { img.src = thumbUrl; }
+        else { img.src = ''; img.style.display = 'none'; }
+      }
+      scheduleVideoTotalSummaryRefresh();
     });
   });
 
@@ -1401,8 +1678,11 @@ function renderVideoInputs() {
       const idx = parseInt(e.target.dataset.idx);
       formVideos[idx].startAt = parseStartTime(e.target.value);
       e.target.value = fmtTime(formVideos[idx].startAt);
+      scheduleVideoTotalSummaryRefresh(0);
     });
   });
+
+  scheduleVideoTotalSummaryRefresh(0);
 }
 
 function addVideo() {

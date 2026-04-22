@@ -176,7 +176,8 @@
     applyCoverCrop();
     if (isLeader) reportResolution();
     if (pixiApp) pixiApp.renderer.resize(window.innerWidth, window.innerHeight);
-    if (activeFx?.sprite) layoutSprite(activeFx.sprite, activeFx.img, activeFx.texture);
+    if (activeFx?.relayout) activeFx.relayout();
+    else if (activeFx?.sprite) layoutSprite(activeFx.sprite, activeFx.img, activeFx.texture);
   });
   initSyncBus();
 
@@ -632,25 +633,88 @@
     canvas.style.display = 'none';
   }
 
-  function layoutSprite(sprite, img, texture) {
+  function getSpriteRect(img, texture) {
     const vpW  = window.innerWidth;
     const vpH  = window.innerHeight;
     const pct  = img.size ?? 80;
     const w    = vpW * pct / 100;
-    const sprH = w * (texture.height / texture.width);
+    const h    = w * (texture.height / texture.width);
     const parts = (img.position || 'center center').split(' ');
     const xKey = parts[0] || 'center';
     const yKey = parts[1] || 'center';
     const KMAP = { left: 0, center: 0.5, right: 1, top: 0, bottom: 1 };
     const fx = xKey in KMAP ? KMAP[xKey] : (parseFloat(xKey) || 50) / 100;
     const fy = yKey in KMAP ? KMAP[yKey] : (parseFloat(yKey) || 50) / 100;
-    sprite.x      = fx * (vpW - w);
-    sprite.y      = fy * (vpH - sprH);
-    sprite.width  = w;
-    sprite.height = sprH;
+    return {
+      x: fx * (vpW - w),
+      y: fy * (vpH - h),
+      width: w,
+      height: h,
+    };
+  }
+
+  function layoutSprite(sprite, img, texture) {
+    const rect = getSpriteRect(img, texture);
+    sprite.x      = rect.x;
+    sprite.y      = rect.y;
+    sprite.width  = rect.width;
+    sprite.height = rect.height;
+  }
+
+  function getCenteredRect(img, texture) {
+    const rect = getSpriteRect({ ...img, position: 'center center' }, texture);
+    return rect;
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function randBetween(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function drawCursorShape(isPressed) {
+    const g = new PIXI.Graphics();
+    const pressShift = isPressed ? 2 : 0;
+    const pressScale = isPressed ? 0.97 : 1;
+    g.lineStyle(4, 0x111111, 1, 0.5, true);
+    g.beginFill(0xffffff, 1);
+    g.moveTo(0, 0);
+    g.lineTo(0, 72 * pressScale);
+    g.lineTo(18 * pressScale, 54 * pressScale + pressShift);
+    g.lineTo(30 * pressScale, 84 * pressScale + pressShift);
+    g.lineTo(43 * pressScale, 78 * pressScale + pressShift);
+    g.lineTo(31 * pressScale, 48 * pressScale + pressShift);
+    g.lineTo(55 * pressScale, 48 * pressScale + pressShift);
+    g.closePath();
+    g.endFill();
+    return g;
+  }
+
+  function buildCursorSprite() {
+    const wrap = new PIXI.Container();
+    const shadow = drawCursorShape(false);
+    shadow.tint = 0x000000;
+    shadow.alpha = 0.22;
+    shadow.x = 5;
+    shadow.y = 6;
+    const up = drawCursorShape(false);
+    const down = drawCursorShape(true);
+    down.visible = false;
+    wrap.addChild(shadow, up, down);
+    wrap.pivot.set(8, 8);
+    wrap.cursorUp = up;
+    wrap.cursorDown = down;
+    return wrap;
   }
 
   function showFx(img, fadeInSec, easing) {
+    if (img.effect === 'worm') {
+      showWormFx(img, fadeInSec, easing);
+      return;
+    }
+
     initPixi();
     stopFx();
     const htmlImg = new Image();
@@ -709,9 +773,502 @@
 
       activeFx = {
         sprite, img, texture,
+        relayout: () => layoutSprite(sprite, img, texture),
         stop: () => {
           pixiApp.ticker.remove(tickFn);
           if (sprite.filters) sprite.filters = [];
+        },
+      };
+    };
+    htmlImg.src = img.imageDataUrl;
+  }
+
+  function showWormFx(img, fadeInSec, easing) {
+    initPixi();
+    stopFx();
+    const htmlImg = new Image();
+    htmlImg.onload = () => {
+      const texture    = PIXI.Texture.from(htmlImg);
+      const root       = new PIXI.Container();
+      const stampLayer = new PIXI.Container();
+      const cursor     = buildCursorSprite();
+      const rateCfg = {
+        slow: {
+          approachSpeed: 280,
+          dragSpeed: [220, 300],
+          pauseRange: [0.42, 0.86],
+          pressDuration: [0.16, 0.22],
+          releaseDuration: [0.12, 0.18],
+          stampGap: [16, 24],
+          turnRange: [2, 6],
+          dragJitter: 0.55,
+          idleDrift: 0.45,
+          maxStamps: 220,
+        },
+        medium: {
+          approachSpeed: 360,
+          dragSpeed: [320, 420],
+          pauseRange: [0.22, 0.54],
+          pressDuration: [0.12, 0.18],
+          releaseDuration: [0.1, 0.16],
+          stampGap: [12, 18],
+          turnRange: [3, 8],
+          dragJitter: 0.82,
+          idleDrift: 0.7,
+          maxStamps: 320,
+        },
+        fast: {
+          approachSpeed: 500,
+          dragSpeed: [460, 620],
+          pauseRange: [0.1, 0.22],
+          pressDuration: [0.1, 0.14],
+          releaseDuration: [0.08, 0.12],
+          stampGap: [8, 14],
+          turnRange: [4, 9],
+          dragJitter: 1.08,
+          idleDrift: 0.9,
+          maxStamps: 420,
+        },
+      }[img.effectSpeed || 'medium'] || {
+        approachSpeed: 360,
+        dragSpeed: [320, 420],
+        pauseRange: [0.22, 0.54],
+        pressDuration: [0.12, 0.18],
+        releaseDuration: [0.1, 0.16],
+        stampGap: [12, 18],
+        turnRange: [3, 8],
+        dragJitter: 0.82,
+        idleDrift: 0.7,
+        maxStamps: 320,
+      };
+
+      // Example persistent stamp:
+      // { x: 640, y: 320, width: 768, height: 432 }
+      let rect = getCenteredRect(img, texture);
+      let stampCarry = 0;
+      let nextStampGap = randBetween(...rateCfg.stampGap);
+      let lastStampPoint = null;
+      const stamps = [];
+
+      root.addChild(stampLayer);
+      root.addChild(cursor);
+      pixiApp.stage.addChild(root);
+
+      let cursorState = {
+        phase: 'approach',
+        phaseTime: 0,
+        phaseLimit: 0,
+        pointerDown: false,
+        pos: { x: 0, y: 0 },
+        vel: { x: 0, y: 0 },
+        target: { x: 0, y: 0 },
+        route: [],
+        dragSegments: [],
+        routeIndex: 0,
+        segmentProgress: 0,
+        dragSpeed: randBetween(...rateCfg.dragSpeed),
+        hasEntered: false,
+      };
+
+      function stampAt(pointerX, pointerY, force = false) {
+        const prev = lastStampPoint || { x: pointerX, y: pointerY };
+        const dx = pointerX - prev.x;
+        const dy = pointerY - prev.y;
+        const dist = Math.hypot(dx, dy);
+        if (!force && dist < 1) return;
+
+        stampCarry += dist;
+        if (!force && stampCarry < nextStampGap) return;
+
+        stampCarry = 0;
+        nextStampGap = randBetween(...rateCfg.stampGap);
+        lastStampPoint = { x: pointerX, y: pointerY };
+
+        const sprite = new PIXI.Sprite(texture);
+        sprite.x = pointerX - rect.width / 2;
+        sprite.y = pointerY;
+        sprite.width = rect.width;
+        sprite.height = rect.height;
+        stampLayer.addChild(sprite);
+        stamps.push(sprite);
+
+        if (stamps.length > rateCfg.maxStamps) {
+          const oldest = stamps.shift();
+          stampLayer.removeChild(oldest);
+          oldest.destroy();
+        }
+      }
+
+      function clearStamps() {
+        while (stamps.length) {
+          const sprite = stamps.pop();
+          stampLayer.removeChild(sprite);
+          sprite.destroy();
+        }
+        stampCarry = 0;
+        nextStampGap = randBetween(...rateCfg.stampGap);
+        lastStampPoint = null;
+      }
+
+      function seedRouteStartStamp() {
+        if (!cursorState.route.length) return;
+
+        // Seed each drag with a visible starting window so the cursor grabs
+        // something that already exists on screen.
+        stampAt(cursorState.route[0].x, cursorState.route[0].y, true);
+      }
+
+      function getPointerBounds() {
+        return {
+          minX: rect.width / 2 + 18,
+          maxX: Math.max(rect.width / 2 + 18, window.innerWidth - rect.width / 2 - 18),
+          minY: 18,
+          maxY: Math.max(18, window.innerHeight - rect.height - 18),
+        };
+      }
+
+      function clampPointerTarget(x, y) {
+        const bounds = getPointerBounds();
+        return {
+          x: clamp(x, bounds.minX, bounds.maxX),
+          y: clamp(y, bounds.minY, bounds.maxY),
+        };
+      }
+
+      function pickPointerTarget(origin = null, minDistance = 0) {
+        const bounds = getPointerBounds();
+        for (let tries = 0; tries < 24; tries++) {
+          const candidate = {
+            x: randBetween(bounds.minX, bounds.maxX),
+            y: randBetween(bounds.minY, bounds.maxY),
+          };
+          if (!origin || Math.hypot(candidate.x - origin.x, candidate.y - origin.y) >= minDistance) {
+            return candidate;
+          }
+        }
+        return {
+          x: clamp(origin?.x ?? (bounds.minX + bounds.maxX) / 2, bounds.minX, bounds.maxX),
+          y: clamp(origin?.y ?? (bounds.minY + bounds.maxY) / 2, bounds.minY, bounds.maxY),
+        };
+      }
+
+      function buildDragRoute() {
+        // Keep each drag unpredictable while capping the number of turns below ten.
+        const turnCount = Math.floor(randBetween(rateCfg.turnRange[0], rateCfg.turnRange[1] + 1));
+        const pointCount = turnCount + 1;
+        const minDistance = Math.max(72, Math.min(window.innerWidth, window.innerHeight) * 0.08, rect.width * 0.14);
+        const route = [];
+        let previous = cursorState.hasEntered ? cursorState.pos : null;
+
+        for (let i = 0; i < pointCount; i++) {
+          const point = pickPointerTarget(previous, i === 0 ? minDistance : minDistance * 0.68);
+          route.push(point);
+          previous = point;
+        }
+
+        return route;
+      }
+
+      function easeInOutSine(t) {
+        return -(Math.cos(Math.PI * t) - 1) / 2;
+      }
+
+      function sampleCatmullRom(p0, p1, p2, p3, t) {
+        const t2 = t * t;
+        const t3 = t2 * t;
+        return {
+          x: 0.5 * (
+            (2 * p1.x)
+            + (-p0.x + p2.x) * t
+            + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2
+            + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3
+          ),
+          y: 0.5 * (
+            (2 * p1.y)
+            + (-p0.y + p2.y) * t
+            + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2
+            + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
+          ),
+        };
+      }
+
+      function sampleCatmullRomTangent(p0, p1, p2, p3, t) {
+        const t2 = t * t;
+        return {
+          x: 0.5 * (
+            (-p0.x + p2.x)
+            + 2 * (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t
+            + 3 * (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t2
+          ),
+          y: 0.5 * (
+            (-p0.y + p2.y)
+            + 2 * (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t
+            + 3 * (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t2
+          ),
+        };
+      }
+
+      function approxCatmullLength(p0, p1, p2, p3) {
+        let total = 0;
+        let prev = p1;
+        for (let i = 1; i <= 8; i++) {
+          const point = sampleCatmullRom(p0, p1, p2, p3, i / 8);
+          total += Math.hypot(point.x - prev.x, point.y - prev.y);
+          prev = point;
+        }
+        return Math.max(1, total);
+      }
+
+      // Example segment:
+      // { p0:{x:320,y:220}, p1:{x:520,y:260}, p2:{x:760,y:380}, p3:{x:900,y:310}, length:286, seed:1.7 }
+      function buildDragSegments(route) {
+        const segments = [];
+        for (let i = 0; i < route.length - 1; i++) {
+          const p0 = route[Math.max(0, i - 1)];
+          const p1 = route[i];
+          const p2 = route[i + 1];
+          const p3 = route[Math.min(route.length - 1, i + 2)];
+          segments.push({
+            p0,
+            p1,
+            p2,
+            p3,
+            length: approxCatmullLength(p0, p1, p2, p3),
+            seed: Math.random() * Math.PI * 2,
+          });
+        }
+        return segments;
+      }
+
+      function placeCursorOffscreen(target = null) {
+        const side = Math.floor(Math.random() * 4);
+        const fallbackY = target?.y ?? window.innerHeight / 2;
+        const fallbackX = target?.x ?? window.innerWidth / 2;
+        if (side === 0) {
+          cursorState.pos.x = -randBetween(140, 220);
+          cursorState.pos.y = clamp(fallbackY + randBetween(-120, 120), 40, window.innerHeight - 40);
+        } else if (side === 1) {
+          cursorState.pos.x = window.innerWidth + randBetween(140, 220);
+          cursorState.pos.y = clamp(fallbackY + randBetween(-120, 120), 40, window.innerHeight - 40);
+        } else if (side === 2) {
+          cursorState.pos.x = clamp(fallbackX + randBetween(-160, 160), 60, window.innerWidth - 60);
+          cursorState.pos.y = -randBetween(140, 220);
+        } else {
+          cursorState.pos.x = clamp(fallbackX + randBetween(-160, 160), 60, window.innerWidth - 60);
+          cursorState.pos.y = window.innerHeight + randBetween(140, 220);
+        }
+        cursorState.vel.x = 0;
+        cursorState.vel.y = 0;
+      }
+
+      function beginNextRoute(forceOffscreen = false) {
+        cursorState.route = buildDragRoute();
+        cursorState.dragSegments = buildDragSegments(cursorState.route);
+        cursorState.routeIndex = 0;
+        cursorState.segmentProgress = 0;
+        cursorState.target.x = cursorState.route[0].x;
+        cursorState.target.y = cursorState.route[0].y;
+        cursorState.dragSpeed = randBetween(...rateCfg.dragSpeed);
+        cursorState.phase = 'approach';
+        cursorState.phaseTime = 0;
+        cursorState.phaseLimit = 0;
+        cursorState.pointerDown = false;
+
+        if (forceOffscreen || !cursorState.hasEntered) {
+          placeCursorOffscreen(cursorState.route[0]);
+          cursorState.hasEntered = true;
+        }
+
+        seedRouteStartStamp();
+      }
+
+      function moveCursorTowards(target, speed, dt, wobble = 0) {
+        const dx = target.x - cursorState.pos.x;
+        const dy = target.y - cursorState.pos.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const step = Math.min(dist, speed * clamp(dist / 140, 0.24, 1) * dt);
+        cursorState.pos.x += dx / dist * step;
+        cursorState.pos.y += dy / dist * step;
+
+        if (wobble > 0) {
+          const now = performance.now() * 0.001;
+          cursorState.pos.x += Math.sin(now * 5.4 + cursorState.phaseTime * 7.2) * wobble;
+          cursorState.pos.y += Math.cos(now * 6.1 + cursorState.phaseTime * 6.4) * wobble;
+          const clamped = clampPointerTarget(cursorState.pos.x, cursorState.pos.y);
+          cursorState.pos.x = clamped.x;
+          cursorState.pos.y = clamped.y;
+        }
+
+        return dist;
+      }
+
+      function updateCursorVelocity(prevX, prevY, dt) {
+        cursorState.vel.x = dt > 0 ? (cursorState.pos.x - prevX) / dt : 0;
+        cursorState.vel.y = dt > 0 ? (cursorState.pos.y - prevY) / dt : 0;
+      }
+
+      function relayoutWorm() {
+        rect = getCenteredRect(img, texture);
+        clearStamps();
+        beginNextRoute(true);
+      }
+
+      function tickFn(deltaFrames) {
+        const dt = Math.min(0.05, deltaFrames / 60);
+        const prevCursorX = cursorState.pos.x;
+        const prevCursorY = cursorState.pos.y;
+
+        cursorState.phaseTime += dt;
+
+        if (cursorState.phase === 'approach') {
+          cursorState.pointerDown = false;
+          const dist = moveCursorTowards(cursorState.target, rateCfg.approachSpeed, dt);
+          if (dist < 6) {
+            cursorState.phase = 'press';
+            cursorState.phaseTime = 0;
+            cursorState.phaseLimit = randBetween(...rateCfg.pressDuration);
+            stampCarry = 0;
+            nextStampGap = randBetween(...rateCfg.stampGap);
+            lastStampPoint = null;
+          }
+        } else if (cursorState.phase === 'press') {
+          cursorState.pointerDown = true;
+          const pressPulse = Math.sin(Math.min(Math.PI, cursorState.phaseTime / cursorState.phaseLimit * Math.PI));
+          const pressTarget = {
+            x: cursorState.target.x - 2.2 + pressPulse * 1.1,
+            y: cursorState.target.y + 2.8 + pressPulse * 1.5,
+          };
+          cursorState.pos.x += (pressTarget.x - cursorState.pos.x) * Math.min(1, dt * 20);
+          cursorState.pos.y += (pressTarget.y - cursorState.pos.y) * Math.min(1, dt * 20);
+          stampAt(cursorState.pos.x, cursorState.pos.y, true);
+          if (cursorState.phaseTime >= cursorState.phaseLimit) {
+            cursorState.routeIndex = 0;
+            cursorState.segmentProgress = 0;
+            cursorState.phase = cursorState.dragSegments.length ? 'drag' : 'release';
+            cursorState.phaseTime = 0;
+            cursorState.phaseLimit = randBetween(...rateCfg.releaseDuration);
+            if (cursorState.phase === 'drag') {
+              cursorState.dragSpeed = randBetween(...rateCfg.dragSpeed);
+            }
+          }
+        } else if (cursorState.phase === 'drag') {
+          cursorState.pointerDown = true;
+          const segment = cursorState.dragSegments[cursorState.routeIndex];
+          if (!segment) {
+            cursorState.phase = 'release';
+            cursorState.phaseTime = 0;
+            cursorState.phaseLimit = randBetween(...rateCfg.releaseDuration);
+          } else {
+            const speedPulse = 0.9 + Math.sin(performance.now() * 0.008 + segment.seed) * 0.14;
+            const progressStep = dt * cursorState.dragSpeed * speedPulse / segment.length;
+            cursorState.segmentProgress = Math.min(1, cursorState.segmentProgress + progressStep);
+
+            const easedProgress = easeInOutSine(cursorState.segmentProgress);
+            const point = sampleCatmullRom(segment.p0, segment.p1, segment.p2, segment.p3, easedProgress);
+            const tangent = sampleCatmullRomTangent(segment.p0, segment.p1, segment.p2, segment.p3, easedProgress);
+            const tangentLength = Math.hypot(tangent.x, tangent.y) || 1;
+            const normal = { x: -tangent.y / tangentLength, y: tangent.x / tangentLength };
+            const dragMidpoint = Math.sin(Math.PI * cursorState.segmentProgress);
+            const handNoise = (
+              Math.sin(performance.now() * 0.011 + segment.seed)
+              + Math.cos(performance.now() * 0.007 + segment.seed * 1.7) * 0.55
+            ) * rateCfg.dragJitter * dragMidpoint;
+            const clamped = clampPointerTarget(
+              point.x + normal.x * handNoise,
+              point.y + normal.y * handNoise * 0.9
+            );
+            cursorState.pos.x = clamped.x;
+            cursorState.pos.y = clamped.y;
+
+            if (cursorState.segmentProgress >= 1) {
+              cursorState.pos.x = segment.p2.x;
+              cursorState.pos.y = segment.p2.y;
+            }
+          }
+
+          stampAt(cursorState.pos.x, cursorState.pos.y);
+
+          if (cursorState.segmentProgress >= 1) {
+            if (cursorState.routeIndex >= cursorState.dragSegments.length - 1) {
+              cursorState.phase = 'release';
+              cursorState.phaseTime = 0;
+              cursorState.phaseLimit = randBetween(...rateCfg.releaseDuration);
+            } else {
+              cursorState.routeIndex += 1;
+              cursorState.segmentProgress = 0;
+              cursorState.dragSpeed = randBetween(...rateCfg.dragSpeed);
+            }
+          }
+        } else if (cursorState.phase === 'release') {
+          cursorState.pointerDown = false;
+          const releaseTarget = clampPointerTarget(cursorState.pos.x + 8, cursorState.pos.y - 10);
+          cursorState.pos.x += (releaseTarget.x - cursorState.pos.x) * Math.min(1, dt * 16);
+          cursorState.pos.y += (releaseTarget.y - cursorState.pos.y) * Math.min(1, dt * 16);
+          if (cursorState.phaseTime >= cursorState.phaseLimit) {
+            cursorState.phase = 'pause';
+            cursorState.phaseTime = 0;
+            cursorState.phaseLimit = randBetween(...rateCfg.pauseRange);
+          }
+        } else {
+          cursorState.pointerDown = false;
+          const now = performance.now() * 0.001;
+          cursorState.pos.x += Math.sin(now * 4.4 + cursorState.phaseTime * 5.2) * rateCfg.idleDrift;
+          cursorState.pos.y += Math.cos(now * 4.9 + cursorState.phaseTime * 5.8) * rateCfg.idleDrift;
+          const clamped = clampPointerTarget(cursorState.pos.x, cursorState.pos.y);
+          cursorState.pos.x = clamped.x;
+          cursorState.pos.y = clamped.y;
+          if (cursorState.phaseTime >= cursorState.phaseLimit) beginNextRoute();
+        }
+
+        updateCursorVelocity(prevCursorX, prevCursorY, dt);
+
+        cursor.cursorUp.visible = !cursorState.pointerDown;
+        cursor.cursorDown.visible = cursorState.pointerDown;
+        cursor.x = cursorState.pos.x;
+        cursor.y = cursorState.pos.y;
+        const moveAngle = Math.atan2(cursorState.vel.y, cursorState.vel.x);
+        const clickPhase = cursorState.phase === 'press';
+        const clickPulse = clickPhase ? Math.sin(Math.min(Math.PI, cursorState.phaseTime / Math.max(0.001, cursorState.phaseLimit) * Math.PI)) : 0;
+        const dragScale = cursorState.pointerDown ? 0.97 : 1;
+        cursor.rotation = (Number.isFinite(moveAngle) ? moveAngle : -1.2) * 0.08 - clickPulse * 0.12;
+        cursor.scale.x = dragScale + clickPulse * 0.28;
+        cursor.scale.y = dragScale - clickPulse * 0.18;
+      }
+
+      beginNextRoute(true);
+
+      // Fade in the canvas using the same timing as the CSS overlay path
+      const canvas = pixiApp.view;
+      canvas.style.transition = `opacity ${fadeInSec}s ${easing}`;
+      canvas.style.display    = 'block';
+      canvas.style.opacity    = '0';
+      void canvas.offsetWidth;
+      canvas.style.opacity    = '1';
+
+      pixiApp.ticker.maxFPS = img.effectSpeed === 'fast' ? 60 : 30;
+      pixiApp.ticker.add(tickFn);
+      pixiApp.ticker.start();
+
+      activeFx = {
+        img, texture,
+        relayout: relayoutWorm,
+        handleKey: (event) => {
+          if (event.code === 'KeyR') {
+            event.preventDefault();
+            clearStamps();
+            beginNextRoute(true);
+            return true;
+          }
+          if (event.code === 'KeyS' && activeImages.length > 1) {
+            event.preventDefault();
+            seekImage((visibleImageIndex + 1) % activeImages.length);
+            return true;
+          }
+          return false;
+        },
+        stop: () => {
+          pixiApp.ticker.remove(tickFn);
+          root.destroy({ children: true });
         },
       };
     };
@@ -953,6 +1510,7 @@
 
   // ── Keyboard ──
   document.addEventListener('keydown', (e) => {
+    if (activeFx?.handleKey?.(e)) return;
     if (isPreviewMode) return;
     if (!ytPlayer || typeof ytPlayer.getPlayerState !== 'function') return;
     if (e.code === 'Space') {
