@@ -205,6 +205,17 @@
   .move-video:hover:not(:disabled) { color: var(--ink); }
   .move-video:disabled { opacity: 0.25; cursor: default; }
   .video-start-time { width: 4.5rem; font-family: ui-monospace, monospace; font-size: 0.8rem; flex-shrink: 0; text-align: center; }
+  .video-runtime {
+    min-width: 5.5rem;
+    flex-shrink: 0;
+    text-align: right;
+    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .video-runtime[data-state="resolved"] { color: var(--ink); }
   .yt-thumb { width: 100%; aspect-ratio: 16/9; max-height: 120px; object-fit: cover; border-radius: 2px; border: 1px solid var(--line); background: #111; }
 
   /* ── Live media panel ── */
@@ -349,7 +360,7 @@
         <p class="form-group-title">Videos</p>
         <p class="form-group-desc">Played in order · each entry starts when the previous ends</p>
       </div>
-      <p class="video-total-summary" id="video-total-summary">YouTube total – add a YouTube video to see the runtime</p>
+      <p class="video-total-summary" id="video-total-summary">Video total – add a video to see the runtime</p>
       <div class="list-cols list-cols--video">
         <span></span>
         <span>YouTube URL</span>
@@ -774,6 +785,8 @@ let liveStateCache = null;
 const GLOBAL_MUTE_PREF_KEY = 'projector_global_mute_on_launch';
 const ytDurationCache = new Map();
 const ytDurationPending = new Map();
+const localDurationCache = new Map();
+const localDurationPending = new Map();
 let ytIframeApiPromise = null;
 let ytDurationProbePromise = null;
 let ytDurationProbePlayer = null;
@@ -1082,6 +1095,49 @@ function formatDurationClock(totalSec) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+// Example runtime source:
+// { kind: 'youtube', cacheKey: 'yt:dQw4w9WgXcQ', videoId: 'dQw4w9WgXcQ' }
+function getVideoDurationSource(video) {
+  const url = (video?.url || '').trim();
+
+  if (video?.localVideoKey) {
+    return {
+      kind: 'local',
+      cacheKey: `local:${video.localVideoKey}`,
+      localVideoKey: video.localVideoKey,
+    };
+  }
+
+  if (!url) return { kind: 'empty', cacheKey: '' };
+
+  const parsed = parseYouTubeUrl(url);
+  if (parsed.videoId) {
+    return {
+      kind: 'youtube',
+      cacheKey: `yt:${parsed.videoId}`,
+      videoId: parsed.videoId,
+    };
+  }
+
+  return { kind: 'unsupported', cacheKey: '' };
+}
+
+function getCachedVideoDuration(source) {
+  if (source.kind === 'youtube') {
+    return ytDurationCache.has(source.videoId) ? ytDurationCache.get(source.videoId) : undefined;
+  }
+  if (source.kind === 'local') {
+    return localDurationCache.has(source.cacheKey) ? localDurationCache.get(source.cacheKey) : undefined;
+  }
+  return undefined;
+}
+
+function isVideoDurationPending(source) {
+  if (source.kind === 'youtube') return ytDurationPending.has(source.videoId);
+  if (source.kind === 'local') return localDurationPending.has(source.cacheKey);
+  return false;
+}
+
 function ytThumbUrl(url) {
   const { videoId } = parseYouTubeUrl(url);
   return videoId ? `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` : null;
@@ -1235,6 +1291,65 @@ function getYouTubeVideoDuration(videoId) {
   return pending;
 }
 
+function probeLocalVideoDuration(blob) {
+  return new Promise(resolve => {
+    const objectUrl = URL.createObjectURL(blob);
+    const video = document.createElement('video');
+    const timeoutId = setTimeout(finish, 7000, null);
+
+    function finish(durationSec) {
+      clearTimeout(timeoutId);
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      video.removeAttribute('src');
+      video.load();
+      URL.revokeObjectURL(objectUrl);
+      resolve(normaliseYouTubeDuration(durationSec));
+    }
+
+    video.preload = 'metadata';
+    video.muted = true;
+    video.onloadedmetadata = () => finish(video.duration);
+    video.onerror = () => finish(null);
+    video.src = objectUrl;
+  });
+}
+
+async function getLocalVideoDuration(localVideoKey) {
+  const cacheKey = `local:${localVideoKey}`;
+  if (!localVideoKey) return null;
+  if (localDurationCache.has(cacheKey)) return localDurationCache.get(cacheKey);
+  if (localDurationPending.has(cacheKey)) return localDurationPending.get(cacheKey);
+
+  const pending = (async () => {
+    try {
+      const blob = await idbGet('localvideos', localVideoKey);
+      if (!blob) {
+        localDurationCache.set(cacheKey, null);
+        return null;
+      }
+      const durationSec = await probeLocalVideoDuration(blob);
+      localDurationCache.set(cacheKey, durationSec);
+      return durationSec;
+    } catch {
+      localDurationCache.set(cacheKey, null);
+      return null;
+    } finally {
+      localDurationPending.delete(cacheKey);
+    }
+  })();
+
+  localDurationPending.set(cacheKey, pending);
+  return pending;
+}
+
+function getVideoDuration(video) {
+  const source = getVideoDurationSource(video);
+  if (source.kind === 'youtube') return getYouTubeVideoDuration(source.videoId);
+  if (source.kind === 'local') return getLocalVideoDuration(source.localVideoKey);
+  return Promise.resolve(null);
+}
+
 function setVideoTotalSummary(text, title = '') {
   const summary = document.getElementById('video-total-summary');
   if (!summary) return;
@@ -1242,34 +1357,89 @@ function setVideoTotalSummary(text, title = '') {
   summary.title = title;
 }
 
+function getVideoTimeoutSeconds() {
+  const raw = parseInt(document.getElementById('f-video-timeout')?.value, 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+function describeVideoRuntime(video) {
+  const source = getVideoDurationSource(video);
+  if (source.kind === 'empty') return { text: '', state: 'empty', title: '' };
+  if (source.kind === 'unsupported') {
+    return {
+      text: 'Unknown',
+      state: 'unknown',
+      title: 'Could not resolve the full runtime for this video.',
+    };
+  }
+
+  const cachedDuration = getCachedVideoDuration(source);
+  if (Number.isFinite(cachedDuration)) {
+    const fullRuntime = formatDurationClock(cachedDuration);
+    const remainingRuntime = Math.max(0, cachedDuration - Math.max(0, Number(video.startAt) || 0));
+    const title = (Number(video.startAt) || 0) > 0
+      ? `Full runtime ${fullRuntime}. Starts at ${formatDurationClock(video.startAt)}, leaving ${formatDurationClock(remainingRuntime)} before any timeout cap.`
+      : `Full runtime ${fullRuntime}.`;
+    return {
+      text: fullRuntime,
+      state: 'resolved',
+      title,
+    };
+  }
+
+  if (cachedDuration === null) {
+    return {
+      text: 'Unknown',
+      state: 'unknown',
+      title: 'Could not resolve the full runtime for this video.',
+    };
+  }
+
+  return {
+    text: '…',
+    state: 'pending',
+    title: 'Calculating full runtime…',
+  };
+}
+
+function renderVideoRuntimeLabel(video, index) {
+  const runtime = describeVideoRuntime(video);
+  return `<span class="video-runtime" data-idx="${index}" data-state="${runtime.state}" title="${esc(runtime.title)}">${esc(runtime.text)}</span>`;
+}
+
+function refreshVideoRuntimeLabels() {
+  formVideos.forEach((video, index) => {
+    const el = document.querySelector(`.video-runtime[data-idx="${index}"]`);
+    if (!el) return;
+    const runtime = describeVideoRuntime(video);
+    el.dataset.state = runtime.state;
+    el.textContent = runtime.text;
+    el.title = runtime.title;
+  });
+}
+
 async function refreshVideoTotalSummary() {
   const refreshToken = ++videoTotalRefreshToken;
   const summary = document.getElementById('video-total-summary');
   if (!summary) return;
 
-  const entries = formVideos.map(video => {
-    const url = (video.url || '').trim();
-    if (!url) return { kind: 'empty' };
-    if (video.localVideoKey) return { kind: 'local' };
+  const entries = formVideos.map((video, index) => ({
+    index,
+    video,
+    source: getVideoDurationSource(video),
+    startAt: Math.max(0, Number(video.startAt) || 0),
+  }));
 
-    const parsed = parseYouTubeUrl(url);
-    if (!parsed.videoId) return { kind: 'unsupported' };
+  const supportedEntries = entries.filter(entry => entry.source.kind === 'youtube' || entry.source.kind === 'local');
+  const unsupportedCount = entries.filter(entry => entry.source.kind === 'unsupported').length;
+  const nonEmptyCount = entries.filter(entry => entry.source.kind !== 'empty').length;
+  const timeoutSec = getVideoTimeoutSeconds();
 
-    return {
-      kind: 'youtube',
-      videoId: parsed.videoId,
-      startAt: Math.max(0, Number(video.startAt) || 0),
-    };
-  });
+  refreshVideoRuntimeLabels();
 
-  const youtubeEntries = entries.filter(entry => entry.kind === 'youtube');
-  const localCount = entries.filter(entry => entry.kind === 'local').length;
-  const unsupportedCount = entries.filter(entry => entry.kind === 'unsupported').length;
-
-  if (!youtubeEntries.length) {
-    if (unsupportedCount > 0) {
-      const summaryParts = ['YouTube total – unavailable', `${unsupportedCount} unknown`];
-      if (localCount > 0) summaryParts.push(`${localCount} local ignored`);
+  if (!supportedEntries.length) {
+    if (unsupportedCount > 0 || nonEmptyCount > 0) {
+      const summaryParts = ['Video total – unavailable', `${unsupportedCount || nonEmptyCount} unknown`];
       setVideoTotalSummary(
         summaryParts.join(' · '),
         'Unsupported links, playlists, live streams and unavailable videos are not counted.'
@@ -1277,34 +1447,40 @@ async function refreshVideoTotalSummary() {
       return;
     }
 
-    const suffix = localCount ? ' · local files are not counted' : '';
-    setVideoTotalSummary(`YouTube total – add a YouTube video to see the runtime${suffix}`);
+    setVideoTotalSummary('Video total – add a video to see the runtime');
     return;
   }
 
-  setVideoTotalSummary('YouTube total – calculating…');
+  const calculatingParts = ['Video total – calculating…'];
+  if (timeoutSec > 0) calculatingParts.push(`${formatDurationClock(timeoutSec)} max/video`);
+  setVideoTotalSummary(calculatingParts.join(' · '), 'Total applies start times and max video duration.');
 
-  const durations = await Promise.all(youtubeEntries.map(async entry => {
-    const durationSec = await getYouTubeVideoDuration(entry.videoId);
-    if (!Number.isFinite(durationSec)) return null;
-    return Math.max(0, durationSec - entry.startAt);
-  }));
+  const durations = await Promise.all(supportedEntries.map(async entry => ({
+    entry,
+    durationSec: await getVideoDuration(entry.video),
+  })));
 
   if (refreshToken !== videoTotalRefreshToken) return;
 
-  const knownDurations = durations.filter(durationSec => Number.isFinite(durationSec));
-  const totalSeconds = knownDurations.reduce((sum, durationSec) => sum + durationSec, 0);
-  const unresolvedCount = youtubeEntries.length - knownDurations.length;
+  refreshVideoRuntimeLabels();
+
+  const knownDurations = durations.filter(item => Number.isFinite(item.durationSec));
+  const totalSeconds = knownDurations.reduce((sum, item) => {
+    const playableDuration = Math.max(0, item.durationSec - item.entry.startAt);
+    const cappedDuration = timeoutSec > 0 ? Math.min(playableDuration, timeoutSec) : playableDuration;
+    return sum + cappedDuration;
+  }, 0);
+  const unresolvedCount = supportedEntries.length - knownDurations.length;
   const summaryParts = [
-    `YouTube total – ${knownDurations.length ? formatDurationClock(totalSeconds) : 'unavailable'}`,
+    `Video total – ${knownDurations.length ? formatDurationClock(totalSeconds) : 'unavailable'}`,
   ];
 
+  if (timeoutSec > 0) summaryParts.push(`${formatDurationClock(timeoutSec)} max/video`);
   if (unresolvedCount + unsupportedCount > 0) summaryParts.push(`${unresolvedCount + unsupportedCount} unknown`);
-  if (localCount > 0) summaryParts.push(`${localCount} local ignored`);
 
   const title = unresolvedCount + unsupportedCount > 0
-    ? 'Unsupported links, playlists, live streams and unavailable videos are not counted.'
-    : '';
+    ? 'Total applies start times and max video duration. Unsupported links, playlists, live streams and unavailable videos are not counted.'
+    : 'Total applies start times and max video duration.';
 
   setVideoTotalSummary(summaryParts.join(' · '), title);
 }
@@ -1313,7 +1489,7 @@ function scheduleVideoTotalSummaryRefresh(delayMs = 180) {
   clearTimeout(videoTotalRefreshTimeoutId);
   videoTotalRefreshTimeoutId = setTimeout(() => {
     refreshVideoTotalSummary().catch(() => {
-      setVideoTotalSummary('YouTube total – unavailable', 'Could not fetch one or more YouTube durations.');
+      setVideoTotalSummary('Video total – unavailable', 'Could not fetch one or more video runtimes.');
     });
   }, delayMs);
 }
@@ -1634,6 +1810,7 @@ function renderVideoInputs() {
         }
         <input type="text" class="video-start-time" data-idx="${i}" data-kind="startAt"
           value="${fmtTime(v.startAt)}" placeholder="0:00" title="Start time (m:ss)">
+        ${renderVideoRuntimeLabel(v, i)}
         <label class="btn btn-ghost btn-sm" style="cursor:pointer;flex-shrink:0;" title="Use a local video file instead of YouTube">
           📁<input type="file" data-idx="${i}" data-kind="video-file" accept="video/*" hidden>
         </label>
@@ -1678,10 +1855,12 @@ function renderVideoInputs() {
       const idx = parseInt(e.target.dataset.idx);
       formVideos[idx].startAt = parseStartTime(e.target.value);
       e.target.value = fmtTime(formVideos[idx].startAt);
+      refreshVideoRuntimeLabels();
       scheduleVideoTotalSummaryRefresh(0);
     });
   });
 
+  refreshVideoRuntimeLabels();
   scheduleVideoTotalSummaryRefresh(0);
 }
 
@@ -1770,6 +1949,7 @@ document.getElementById('cancel-btn').addEventListener('click', maybeClose);
 document.getElementById('new-btn').addEventListener('click', () => openForm());
 document.getElementById('add-video-btn').addEventListener('click', addVideo);
 document.getElementById('add-image-btn').addEventListener('click', addImage);
+document.getElementById('f-video-timeout').addEventListener('input', () => scheduleVideoTotalSummaryRefresh(0));
 // Mark form dirty on any user input inside the panel
 document.getElementById('form-panel').addEventListener('input',  () => { formDirty = true; });
 document.getElementById('form-panel').addEventListener('change', () => { formDirty = true; });
