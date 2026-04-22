@@ -1178,6 +1178,17 @@ function normaliseYouTubeDuration(sec) {
   return duration > 0 ? duration : null;
 }
 
+function getYouTubeProbeVideoId() {
+  return ytDurationProbePlayer?.getVideoData?.().video_id || null;
+}
+
+function maybeFinishYouTubeDurationProbe() {
+  if (!ytDurationProbeActive || !ytDurationProbePlayer) return;
+  if (getYouTubeProbeVideoId() !== ytDurationProbeActive.videoId) return;
+  const durationSec = normaliseYouTubeDuration(ytDurationProbePlayer.getDuration?.());
+  if (durationSec !== null) finishYouTubeDurationProbe(durationSec);
+}
+
 function finishYouTubeDurationProbe(durationSec) {
   if (!ytDurationProbeActive) return;
 
@@ -1194,9 +1205,7 @@ function finishYouTubeDurationProbe(durationSec) {
 }
 
 function handleYouTubeDurationProbeStateChange() {
-  if (!ytDurationProbeActive || !ytDurationProbePlayer) return;
-  const durationSec = normaliseYouTubeDuration(ytDurationProbePlayer.getDuration?.());
-  if (durationSec !== null) finishYouTubeDurationProbe(durationSec);
+  maybeFinishYouTubeDurationProbe();
 }
 
 function handleYouTubeDurationProbeError() {
@@ -1263,14 +1272,12 @@ async function runNextYouTubeDurationProbe() {
   const next = ytDurationProbeQueue.shift();
   ytDurationProbeActive = {
     ...next,
-    pollId: setInterval(() => {
-      const durationSec = normaliseYouTubeDuration(player.getDuration?.());
-      if (durationSec !== null) finishYouTubeDurationProbe(durationSec);
-    }, 250),
+    pollId: setInterval(() => maybeFinishYouTubeDurationProbe(), 250),
     timeoutId: setTimeout(() => finishYouTubeDurationProbe(null), 7000),
   };
 
   try {
+    try { player.stopVideo?.(); } catch { /* non-fatal */ }
     player.cueVideoById({ videoId: next.videoId, suggestedQuality: 'small' });
   } catch {
     finishYouTubeDurationProbe(null);
