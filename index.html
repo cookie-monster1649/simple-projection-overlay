@@ -467,6 +467,12 @@
 </div>
 
 <script>
+  if (location.protocol === 'file:') {
+    document.body.innerHTML = '<div style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0b0b0d;color:#ff8a6b;font-family:ui-monospace,monospace;font-size:1rem;gap:1rem;padding:2rem;text-align:center"><strong style="font-size:1.2rem">Cannot run from the filesystem</strong><p>Open this file via a local HTTP server, not directly from disk.<br>The YouTube API is blocked on <code>file://</code> origins.</p><p style="color:#aaa">Run one of these in the project folder, then open <code>http://localhost:8000</code>:</p><pre style="background:#1a1a1f;padding:1rem;border-radius:4px;text-align:left">python3 -m http.server\nnpx serve .</pre></div>';
+    throw new Error('file:// origin — aborting init');
+  }
+</script>
+<script>
 // ── IndexedDB helpers ──
 // Stores: 'workspace' (FileSystemDirectoryHandle), 'active' (active set config for player), 'sets' (fallback set storage)
 async function openAppDb() {
