@@ -18,23 +18,21 @@ Alternatively: `npx serve .` (Node), or any VS Code local server extension.
 
 ### Manager
 
-![Manager — set list](screenshots/manager-list.png)
+![Manager — set list](assets/manager-list.png)
 
-![Manager — editing a set](screenshots/manager-edit.png)
-
-### Live control panel
-
-![Live control panel](screenshots/manager-live.png)
+![Manager — editing a set](assets/manager-edit.png)
 
 ### Output window
 
-![Player — overlay on video](screenshots/player-overlay.png)
+![Player — overlay on video](assets/example-player.png)
 
 ### Visual effects — worm drag
 
-![Worm drag effect](screenshots/player-worm-drag.png)
+![Worm drag — stamp accumulation](assets/player-worm-stamps.png)
 
-![Worm drag — stamp accumulation](screenshots/player-worm-stamps.png)
+### Overview
+
+![Overview](assets/overview.png)
 
 ---
 
